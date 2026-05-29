@@ -1,5 +1,11 @@
 // WristAgent companion JS - OpenAI API integration and conversation history management
 
+// Numeric keys must match appinfo.json messageKeys exactly
+var KEY_QUERY    = 0;
+var KEY_RESPONSE = 1;
+var KEY_STATUS   = 2;
+var KEY_COMMAND  = 3;
+
 var conversationHistory = [
   { role: 'system', content: 'You are a helpful assistant on a smartwatch. Answer concisely.' }
 ];
@@ -21,14 +27,38 @@ function addToHistory(role, content) {
   }
 }
 
+// Retry sendAppMessage once on nack to handle transient ACK timing issues
+function sendWithRetry(dict, label) {
+  Pebble.sendAppMessage(dict,
+    function() { console.log('[WristAgent] sent: ' + label); },
+    function(e) {
+      console.log('[WristAgent] nack for ' + label + ', retrying: ' + JSON.stringify(e));
+      setTimeout(function() {
+        Pebble.sendAppMessage(dict,
+          function() { console.log('[WristAgent] retry ok: ' + label); },
+          function(e2) { console.log('[WristAgent] retry failed: ' + JSON.stringify(e2)); }
+        );
+      }, 500);
+    }
+  );
+}
+
+function sendStatus(msg) {
+  var dict = {};
+  dict[KEY_STATUS] = msg;
+  sendWithRetry(dict, 'status:' + msg);
+}
+
+function sendResponse(text) {
+  var dict = {};
+  dict[KEY_RESPONSE] = text.substring(0, 500);
+  sendWithRetry(dict, 'response');
+}
+
 function handleQuery(text) {
   var apiKey = localStorage.getItem('openai_api_key');
   if (!apiKey) {
-    Pebble.sendAppMessage(
-      { 'KEY_STATUS': 'error:No API key. Open settings.' },
-      function() {},
-      function(e) { console.log('Send failed: ' + JSON.stringify(e)); }
-    );
+    sendStatus('error:APIキー未設定。設定を開いてください');
     return;
   }
 
@@ -42,39 +72,25 @@ function handleQuery(text) {
 
   req.onload = function() {
     if (req.status === 200) {
-      var data = JSON.parse(req.responseText);
-      var reply = data.choices[0].message.content;
-      addToHistory('assistant', reply);
-      // Truncate to 500 chars to fit within AppMessage 512-byte limit with key overhead
-      var truncated = reply.substring(0, 500);
-      Pebble.sendAppMessage(
-        { 'KEY_RESPONSE': truncated },
-        function() { console.log('Response sent'); },
-        function(e) { console.log('Response send failed: ' + JSON.stringify(e)); }
-      );
+      try {
+        var data = JSON.parse(req.responseText);
+        var reply = data.choices[0].message.content;
+        addToHistory('assistant', reply);
+        sendResponse(reply);
+      } catch (err) {
+        sendStatus('error:レスポンス解析失敗');
+      }
     } else {
-      Pebble.sendAppMessage(
-        { 'KEY_STATUS': 'error:API ' + req.status },
-        function() {},
-        function(e) { console.log('Status send failed: ' + JSON.stringify(e)); }
-      );
+      sendStatus('error:API HTTP ' + req.status);
     }
   };
 
   req.ontimeout = function() {
-    Pebble.sendAppMessage(
-      { 'KEY_STATUS': 'error:Timeout' },
-      function() {},
-      function(e) { console.log('Timeout send failed: ' + JSON.stringify(e)); }
-    );
+    sendStatus('error:タイムアウト');
   };
 
   req.onerror = function() {
-    Pebble.sendAppMessage(
-      { 'KEY_STATUS': 'error:Network error' },
-      function() {},
-      function(e) { console.log('Error send failed: ' + JSON.stringify(e)); }
-    );
+    sendStatus('error:ネットワークエラー');
   };
 
   req.send(JSON.stringify({
@@ -85,25 +101,24 @@ function handleQuery(text) {
 }
 
 Pebble.addEventListener('ready', function() {
-  console.log('WristAgent PebbleKit JS ready');
+  console.log('[WristAgent] PebbleKit JS ready');
 });
 
 Pebble.addEventListener('appmessage', function(e) {
   var payload = e.payload;
-  console.log('Received: ' + JSON.stringify(payload));
+  console.log('[WristAgent] received: ' + JSON.stringify(payload));
 
-  if (payload.KEY_QUERY !== undefined) {
-    handleQuery(payload.KEY_QUERY);
+  // Accept both numeric and string key forms
+  var query   = payload[KEY_QUERY]   !== undefined ? payload[KEY_QUERY]   : payload.KEY_QUERY;
+  var command = payload[KEY_COMMAND] !== undefined ? payload[KEY_COMMAND] : payload.KEY_COMMAND;
+
+  if (query !== undefined) {
+    handleQuery(String(query));
   }
 
-  if (payload.KEY_COMMAND === 'reset') {
-    // Keep only system prompt
+  if (command === 'reset') {
     conversationHistory = [conversationHistory[0]];
-    Pebble.sendAppMessage(
-      { 'KEY_STATUS': 'reset_ok' },
-      function() { console.log('Reset acknowledged'); },
-      function(e) { console.log('Reset ack failed: ' + JSON.stringify(e)); }
-    );
+    sendStatus('reset_ok');
   }
 });
 
@@ -117,10 +132,10 @@ Pebble.addEventListener('webviewclosed', function(e) {
       var config = JSON.parse(decodeURIComponent(e.response));
       if (config.apiKey) {
         localStorage.setItem('openai_api_key', config.apiKey);
-        console.log('API key saved');
+        console.log('[WristAgent] API key saved');
       }
     } catch (err) {
-      console.log('Config parse error: ' + err);
+      console.log('[WristAgent] config parse error: ' + err);
     }
   }
 });
