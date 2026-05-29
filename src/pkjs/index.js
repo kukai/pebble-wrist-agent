@@ -123,7 +123,7 @@ Pebble.addEventListener('appmessage', function(e) {
 });
 
 Pebble.addEventListener('showConfiguration', function() {
-  Pebble.openURL('https://kukaidev.github.io/pebble-wrist-agent/config/');
+  Pebble.openURL('https://kukai.github.io/pebble-wrist-agent/config/');
 });
 
 Pebble.addEventListener('webviewclosed', function(e) {
