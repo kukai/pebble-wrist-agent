@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>WristAgent Settings</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, sans-serif;
+      background: #1a1a1a;
+      color: #f0f0f0;
+      padding: 24px 16px;
+      min-height: 100vh;
+    }
+    h1 {
+      font-size: 22px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+    .subtitle {
+      font-size: 13px;
+      color: #888;
+      margin-bottom: 28px;
+    }
+    label {
+      display: block;
+      font-size: 13px;
+      color: #aaa;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    input[type="password"],
+    input[type="text"] {
+      width: 100%;
+      padding: 12px 14px;
+      background: #2a2a2a;
+      border: 1px solid #444;
+      border-radius: 8px;
+      color: #f0f0f0;
+      font-size: 15px;
+      outline: none;
+      margin-bottom: 8px;
+    }
+    input:focus {
+      border-color: #666;
+    }
+    .hint {
+      font-size: 12px;
+      color: #666;
+      margin-bottom: 28px;
+    }
+    .btn {
+      display: block;
+      width: 100%;
+      padding: 14px;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-bottom: 12px;
+    }
+    .btn-primary {
+      background: #4a90d9;
+      color: #fff;
+    }
+    .btn-secondary {
+      background: #2a2a2a;
+      color: #aaa;
+      border: 1px solid #444;
+    }
+  </style>
+</head>
+<body>
+  <h1>WristAgent</h1>
+  <p class="subtitle">OpenAI API設定</p>
+
+  <label for="apiKey">API Key</label>
+  <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off" autocorrect="off" spellcheck="false">
+  <p class="hint" id="hint"></p>
+
+  <button class="btn btn-primary" id="saveBtn">保存</button>
+  <button class="btn btn-secondary" id="cancelBtn">キャンセル</button>
+
+  <script>
+    (function() {
+      var savedKey = localStorage.getItem('openai_api_key');
+      if (savedKey) {
+        document.getElementById('hint').textContent =
+          '現在のキー: ' + savedKey.substring(0, 7) + '****...' + savedKey.slice(-4);
+      }
+
+      document.getElementById('saveBtn').addEventListener('click', function() {
+        var key = document.getElementById('apiKey').value.trim();
+        // If field is empty and a key is already saved, keep the existing key
+        if (!key && savedKey) {
+          key = savedKey;
+        }
+        if (!key) {
+          alert('APIキーを入力してください。');
+          return;
+        }
+        localStorage.setItem('openai_api_key', key);
+        var result = encodeURIComponent(JSON.stringify({ apiKey: key }));
+        location.href = 'pebblekit://custom?data=' + result;
+      });
+
+      document.getElementById('cancelBtn').addEventListener('click', function() {
+        location.href = 'pebblekit://custom?data=CANCELLED';
+      });
+    })();
+  </script>
+</body>
+</html>
