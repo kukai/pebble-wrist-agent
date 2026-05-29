@@ -411,10 +411,12 @@ static void window_unload(Window *window) {
 static void init(void) {
   app_message_register_inbox_received(inbox_received_handler);
   app_message_register_outbox_failed(outbox_failed_handler);
-  app_message_open(
-    MIN(512, app_message_inbox_size_maximum()),
-    MIN(512, app_message_outbox_size_maximum())
-  );
+  {
+    uint32_t inbox  = app_message_inbox_size_maximum();
+    uint32_t outbox = app_message_outbox_size_maximum();
+    app_message_open(inbox  < 512 ? inbox  : 512,
+                     outbox < 512 ? outbox : 512);
+  }
 
 #if defined(PBL_MICROPHONE)
   s_dictation_session = dictation_session_create(QUERY_BUF_SIZE,
