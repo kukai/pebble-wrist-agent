@@ -160,16 +160,13 @@ Pebble.addEventListener('showConfiguration', function() {
 });
 
 Pebble.addEventListener('webviewclosed', function(e) {
-  console.log('[WA] webviewclosed raw response: ' + e.response);
+  console.log('[WA] webviewclosed fired, response: ' + e.response);
   if (!e.response) {
-    console.log('[WA] no response, ignoring');
+    console.log('[WA] empty response');
     return;
   }
 
-  // e.response は URL全体の場合と data= の値だけの場合がある
   var raw = e.response;
-
-  // URL形式 (pebblekit://custom?data=...) の場合は data= 以降を抽出
   var dataMatch = raw.match(/[?&]data=([^&]*)/);
   if (dataMatch) {
     raw = dataMatch[1];
@@ -177,16 +174,15 @@ Pebble.addEventListener('webviewclosed', function(e) {
 
   try {
     var config = JSON.parse(decodeURIComponent(raw));
-    console.log('[WA] config parsed: ' + JSON.stringify(config));
-    if (config.cancelled) {
-      console.log('[WA] user cancelled');
-      return;
-    }
+    console.log('[WA] config: ' + JSON.stringify(config));
+    if (config.cancelled) return;
     if (config.apiKey) {
       localStorage.setItem('openai_api_key', config.apiKey);
-      console.log('[WA] API key saved, prefix: ' + config.apiKey.substring(0, 7));
+      console.log('[WA] saved key prefix: ' + config.apiKey.substring(0, 7));
+      // ウォッチにキー保存完了を通知（デバッグ兼ユーザー確認用）
+      sendStatus('key_saved');
     }
   } catch (err) {
-    console.log('[WA] config parse error: ' + err + ' raw=' + raw);
+    console.log('[WA] parse error: ' + err + ' raw=' + raw);
   }
 });

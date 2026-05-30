@@ -263,6 +263,9 @@ static void inbox_received_handler(DictionaryIterator *iter, void *ctx) {
       s_history_count = 0;
       text_layer_set_text(s_home_status_layer, "Up長押し:リセット");
       show_screen(SCREEN_HOME);
+    } else if (strcmp(status, "key_saved") == 0) {
+      text_layer_set_text(s_home_status_layer, "APIキー保存完了!");
+      show_screen(SCREEN_HOME);
     }
   }
 }
