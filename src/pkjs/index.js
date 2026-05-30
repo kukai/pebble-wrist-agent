@@ -150,7 +150,13 @@ Pebble.addEventListener('appmessage', function(e) {
 });
 
 Pebble.addEventListener('showConfiguration', function() {
-  Pebble.openURL('https://kukai.github.io/pebble-wrist-agent/config/');
+  var apiKey = localStorage.getItem('openai_api_key') || '';
+  var masked = apiKey
+    ? apiKey.substring(0, 7) + '****...' + apiKey.slice(-4)
+    : '';
+  var url = 'https://kukai.github.io/pebble-wrist-agent/config/' +
+            '?current=' + encodeURIComponent(masked);
+  Pebble.openURL(url);
 });
 
 Pebble.addEventListener('webviewclosed', function(e) {

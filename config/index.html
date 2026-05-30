@@ -49,15 +49,11 @@
     }
     .btn-primary { background: #4a90d9; color: #fff; }
     .btn-secondary { background: #2a2a2a; color: #aaa; border: 1px solid #444; }
-
-    /* Toast */
     #toast {
       position: fixed;
       bottom: 32px;
       left: 50%;
       transform: translateX(-50%) translateY(80px);
-      background: #2ecc71;
-      color: #fff;
       padding: 12px 24px;
       border-radius: 24px;
       font-size: 15px;
@@ -67,11 +63,9 @@
       transition: transform 0.3s ease, opacity 0.3s ease;
       opacity: 0;
       pointer-events: none;
+      color: #fff;
     }
-    #toast.show {
-      transform: translateX(-50%) translateY(0);
-      opacity: 1;
-    }
+    #toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
   </style>
 </head>
 <body>
@@ -85,7 +79,7 @@
   <button class="btn btn-primary" id="saveBtn">保存</button>
   <button class="btn btn-secondary" id="cancelBtn">キャンセル</button>
 
-  <div id="toast">✓ APIキーを保存しました</div>
+  <div id="toast"></div>
 
   <script>
     (function() {
@@ -93,7 +87,14 @@
         var match = location.search.match(new RegExp('[?&]' + name + '=([^&]*)'));
         return match ? decodeURIComponent(match[1]) : null;
       }
+
       var returnTo = getParam('return_to') || 'pebblekit://custom';
+
+      // コンパニオンJSから渡された現在の設定状況を表示
+      var current = getParam('current');
+      if (current) {
+        document.getElementById('hint').textContent = '設定済み: ' + current;
+      }
 
       function closeConfig(data) {
         location.href = returnTo + '?data=' + encodeURIComponent(JSON.stringify(data));
@@ -102,7 +103,7 @@
       function showToast(msg, color, callback) {
         var toast = document.getElementById('toast');
         toast.textContent = msg;
-        toast.style.background = color || '#2ecc71';
+        toast.style.background = color;
         toast.classList.add('show');
         setTimeout(function() {
           toast.classList.remove('show');
@@ -110,23 +111,13 @@
         }, 1800);
       }
 
-      var savedKey = localStorage.getItem('openai_api_key');
-      if (savedKey) {
-        document.getElementById('hint').textContent =
-          '設定済み: ' + savedKey.substring(0, 7) + '****...' + savedKey.slice(-4);
-      }
-
       document.getElementById('saveBtn').addEventListener('click', function() {
         var key = document.getElementById('apiKey').value.trim();
-        if (!key && savedKey) {
-          key = savedKey;
-        }
         if (!key) {
           showToast('APIキーを入力してください', '#e74c3c');
           return;
         }
-        localStorage.setItem('openai_api_key', key);
-        showToast('✓ APIキーを保存しました', '#2ecc71', function() {
+        showToast('✓ 保存してウォッチに反映中...', '#2ecc71', function() {
           closeConfig({ apiKey: key });
         });
       });
