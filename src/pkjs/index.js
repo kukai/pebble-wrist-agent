@@ -1,5 +1,9 @@
 // WristAgent companion JS - OpenAI API integration and conversation history management
 
+// ===== API KEY (hardcoded for testing) =====
+var HARDCODED_API_KEY = ''; // ← ここに sk-... を記入
+// ===========================================
+
 var KEY_QUERY    = 0;
 var KEY_RESPONSE = 1;
 var KEY_STATUS   = 2;
@@ -51,7 +55,7 @@ function sendWithRetry(dict, label) {
 }
 
 function sendStatus(msg) {
-  console.log('[WA] status: ' + msg);
+  console.log('[WA] status len=' + msg.length);
   var dict = {};
   dict[KEY_STATUS] = msg;
   sendWithRetry(dict, 'status');
@@ -64,11 +68,11 @@ function sendResponse(text) {
 }
 
 function handleQuery(text) {
-  console.log('[WA] handleQuery: ' + text);
+  console.log('[WA] handleQuery len=' + text.length);
 
-  var apiKey = localStorage.getItem('openai_api_key');
+  var apiKey = HARDCODED_API_KEY || localStorage.getItem('openai_api_key');
   if (!apiKey) {
-    sendStatus('error:APIキー未設定');
+    sendStatus('error:no_api_key');
     return;
   }
   console.log('[WA] apiKey prefix: ' + apiKey.substring(0, 7));
@@ -90,17 +94,17 @@ function handleQuery(text) {
 
   req.onload = function() {
     console.log('[WA] onload status: ' + req.status);
-    console.log('[WA] response: ' + req.responseText.substring(0, 200));
+    console.log('[WA] response len=' + req.responseText.length);
     if (req.status === 200) {
       try {
         var data = JSON.parse(req.responseText);
         var reply = data.choices[0].message.content;
-        console.log('[WA] reply: ' + reply.substring(0, 100));
+        console.log('[WA] reply len=' + reply.length);
         addToHistory('assistant', reply);
         sendResponse(reply);
       } catch (err) {
         console.log('[WA] parse error: ' + err);
-        sendStatus('error:レスポンス解析失敗');
+        sendStatus('error:parse_fail');
       }
     } else {
       // エラー内容の先頭をウォッチに表示
@@ -117,12 +121,12 @@ function handleQuery(text) {
 
   req.ontimeout = function() {
     console.log('[WA] timeout');
-    sendStatus('error:タイムアウト');
+    sendStatus('error:timeout');
   };
 
   req.onerror = function() {
     console.log('[WA] onerror');
-    sendStatus('error:ネットワークエラー');
+    sendStatus('error:network');
   };
 
   req.send(body);
@@ -134,7 +138,7 @@ Pebble.addEventListener('ready', function() {
 
 Pebble.addEventListener('appmessage', function(e) {
   var payload = e.payload;
-  console.log('[WA] appmessage: ' + JSON.stringify(payload));
+  console.log('[WA] appmessage keys=' + Object.keys(payload).join(','));
 
   var query   = payload[KEY_QUERY]   !== undefined ? payload[KEY_QUERY]   : payload.KEY_QUERY;
   var command = payload[KEY_COMMAND] !== undefined ? payload[KEY_COMMAND] : payload.KEY_COMMAND;
@@ -150,39 +154,30 @@ Pebble.addEventListener('appmessage', function(e) {
 });
 
 Pebble.addEventListener('showConfiguration', function() {
+  console.log('[WA] showConfiguration fired');
   var apiKey = localStorage.getItem('openai_api_key') || '';
   var masked = apiKey
     ? apiKey.substring(0, 7) + '****...' + apiKey.slice(-4)
     : '';
   var url = 'https://kukai.github.io/pebble-wrist-agent/config/' +
-            '?v=4&current=' + encodeURIComponent(masked);
+            '?v=6&current=' + encodeURIComponent(masked);
+  console.log('[WA] openURL called');
   Pebble.openURL(url);
 });
 
 Pebble.addEventListener('webviewclosed', function(e) {
-  console.log('[WA] webviewclosed fired, response: ' + e.response);
-  if (!e.response) {
-    console.log('[WA] empty response');
-    return;
-  }
-
-  var raw = e.response;
-  var dataMatch = raw.match(/[?&]data=([^&]*)/);
-  if (dataMatch) {
-    raw = dataMatch[1];
-  }
+  console.log('[WA] webviewclosed len=' + (e.response ? e.response.length : 0));
+  if (!e.response || e.response.length === 0) return;
 
   try {
-    var config = JSON.parse(decodeURIComponent(raw));
-    console.log('[WA] config: ' + JSON.stringify(config));
+    var config = JSON.parse(decodeURIComponent(e.response));
     if (config.cancelled) return;
     if (config.apiKey) {
       localStorage.setItem('openai_api_key', config.apiKey);
-      console.log('[WA] saved key prefix: ' + config.apiKey.substring(0, 7));
-      // ウォッチにキー保存完了を通知（デバッグ兼ユーザー確認用）
+      console.log('[WA] key saved');
       sendStatus('key_saved');
     }
   } catch (err) {
-    console.log('[WA] parse error: ' + err + ' raw=' + raw);
+    console.log('[WA] webviewclosed parse err');
   }
 });

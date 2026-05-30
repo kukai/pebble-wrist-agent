@@ -5,16 +5,19 @@
   "companyName": "kukai",
   "versionLabel": "1.0.0",
   "sdkVersion": "3",
-  "targetPlatforms": ["basalt"],
+  "targetPlatforms": ["emery"],
   "watchapp": {
     "watchface": false
   },
-  "capabilities": ["configurable"],
-  "messageKeys": {
-    "KEY_QUERY":    0,
+  "enableMultiJS": true,
+  "capabilities": [
+    "configurable"
+  ],
+  "appKeys": {
+    "KEY_QUERY": 0,
     "KEY_RESPONSE": 1,
-    "KEY_STATUS":   2,
-    "KEY_COMMAND":  3
+    "KEY_STATUS": 2,
+    "KEY_COMMAND": 3
   },
   "resources": {
     "media": []

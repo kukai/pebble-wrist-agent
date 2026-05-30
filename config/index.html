@@ -16,11 +16,11 @@
              font-size: 16px; font-weight: bold; margin-bottom: 12px; cursor: pointer; }
     #saveBtn { background: #4a90d9; color: #fff; }
     #cancelBtn { background: #2a2a2a; color: #aaa; border: 1px solid #444; }
-    #dbg { font-size: 11px; color: #666; word-break: break-all; margin-top: 12px; }
+    #status { font-size: 14px; color: #4a90d9; margin-top: 16px; min-height: 20px; }
   </style>
 </head>
 <body>
-  <h1>WristAgent v4</h1>
+  <h1>WristAgent</h1>
   <p id="hint">OpenAI API設定</p>
 
   <label>API Key</label>
@@ -29,43 +29,31 @@
   <button id="saveBtn" onclick="doSave()">保存</button>
   <button id="cancelBtn" onclick="doCancel()">キャンセル</button>
 
-  <div id="dbg"></div>
+  <div id="status"></div>
 
   <script>
-    function dbg(msg) {
-      document.getElementById('dbg').textContent += msg + '\n';
-    }
-
     function getParam(name) {
-      var s = location.search || location.href.split('?')[1] || '';
-      var re = new RegExp('[?&]' + name + '=([^&]*)');
-      var m = s.match(re) || (location.href).match(new RegExp('[?&]' + name + '=([^&]*)'));
+      var m = location.search.match(new RegExp('[?&]' + name + '=([^&]*)'));
       return m ? decodeURIComponent(m[1]) : '';
     }
 
-    var returnTo = getParam('return_to') || 'pebblekit://custom';
-    var current  = getParam('current');
-
-    dbg('v4 loaded');
-    dbg('returnTo: ' + returnTo);
-    dbg('current: ' + current);
-
+    var current = getParam('current');
     if (current) {
       document.getElementById('hint').textContent = '設定済み: ' + current;
     }
 
     function doSave() {
-      dbg('doSave called');
       var key = document.getElementById('apiKey').value.trim();
       if (!key) { alert('APIキーを入力してください'); return; }
-      var url = returnTo + '?data=' + encodeURIComponent(JSON.stringify({ apiKey: key }));
-      dbg('redirect to: ' + url.substring(0, 80));
-      window.location.replace(url);
+      // URLハッシュにデータをセット → 戻るボタンで閉じると e.response に渡される
+      location.hash = encodeURIComponent(JSON.stringify({ apiKey: key }));
+      document.getElementById('status').textContent = '保存しました。戻るボタンで閉じてください。';
+      document.getElementById('saveBtn').disabled = true;
     }
 
     function doCancel() {
-      var url = returnTo + '?data=' + encodeURIComponent(JSON.stringify({ cancelled: true }));
-      window.location.replace(url);
+      location.hash = encodeURIComponent(JSON.stringify({ cancelled: true }));
+      history.back();
     }
   </script>
 </body>
