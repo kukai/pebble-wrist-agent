@@ -86,6 +86,17 @@
 
   <script>
     (function() {
+      // Pebble が付加する return_to パラメータを取得する
+      function getParam(name) {
+        var match = location.search.match(new RegExp('[?&]' + name + '=([^&]*)'));
+        return match ? decodeURIComponent(match[1]) : null;
+      }
+      var returnTo = getParam('return_to') || 'pebblekit://custom';
+
+      function closeConfig(data) {
+        location.href = returnTo + '?data=' + encodeURIComponent(JSON.stringify(data));
+      }
+
       var savedKey = localStorage.getItem('openai_api_key');
       if (savedKey) {
         document.getElementById('hint').textContent =
@@ -94,7 +105,6 @@
 
       document.getElementById('saveBtn').addEventListener('click', function() {
         var key = document.getElementById('apiKey').value.trim();
-        // If field is empty and a key is already saved, keep the existing key
         if (!key && savedKey) {
           key = savedKey;
         }
@@ -103,12 +113,11 @@
           return;
         }
         localStorage.setItem('openai_api_key', key);
-        var result = encodeURIComponent(JSON.stringify({ apiKey: key }));
-        location.href = 'pebblekit://custom?data=' + result;
+        closeConfig({ apiKey: key });
       });
 
       document.getElementById('cancelBtn').addEventListener('click', function() {
-        location.href = 'pebblekit://custom?data=CANCELLED';
+        closeConfig({ cancelled: true });
       });
     })();
   </script>
