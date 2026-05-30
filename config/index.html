@@ -117,8 +117,9 @@
           showToast('APIキーを入力してください', '#e74c3c');
           return;
         }
-        // 即座にリダイレクト（遅延なし）
-        closeConfig({ apiKey: key });
+        var url = returnTo + '?data=' + encodeURIComponent(JSON.stringify({ apiKey: key }));
+        alert('DEBUG: returnTo=[' + returnTo + ']\n\nURL先頭64文字:\n' + url.substring(0, 64));
+        window.location.replace(url);
       });
 
       document.getElementById('cancelBtn').addEventListener('click', function() {
