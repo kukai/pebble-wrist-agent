@@ -13,16 +13,8 @@
       padding: 24px 16px;
       min-height: 100vh;
     }
-    h1 {
-      font-size: 22px;
-      font-weight: 600;
-      margin-bottom: 8px;
-    }
-    .subtitle {
-      font-size: 13px;
-      color: #888;
-      margin-bottom: 28px;
-    }
+    h1 { font-size: 22px; font-weight: 600; margin-bottom: 8px; }
+    .subtitle { font-size: 13px; color: #888; margin-bottom: 28px; }
     label {
       display: block;
       font-size: 13px;
@@ -31,8 +23,7 @@
       text-transform: uppercase;
       letter-spacing: 0.5px;
     }
-    input[type="password"],
-    input[type="text"] {
+    input[type="password"] {
       width: 100%;
       padding: 12px 14px;
       background: #2a2a2a;
@@ -43,14 +34,8 @@
       outline: none;
       margin-bottom: 8px;
     }
-    input:focus {
-      border-color: #666;
-    }
-    .hint {
-      font-size: 12px;
-      color: #666;
-      margin-bottom: 28px;
-    }
+    input:focus { border-color: #666; }
+    .hint { font-size: 12px; color: #666; margin-bottom: 28px; }
     .btn {
       display: block;
       width: 100%;
@@ -62,14 +47,30 @@
       cursor: pointer;
       margin-bottom: 12px;
     }
-    .btn-primary {
-      background: #4a90d9;
+    .btn-primary { background: #4a90d9; color: #fff; }
+    .btn-secondary { background: #2a2a2a; color: #aaa; border: 1px solid #444; }
+
+    /* Toast */
+    #toast {
+      position: fixed;
+      bottom: 32px;
+      left: 50%;
+      transform: translateX(-50%) translateY(80px);
+      background: #2ecc71;
       color: #fff;
+      padding: 12px 24px;
+      border-radius: 24px;
+      font-size: 15px;
+      font-weight: 600;
+      white-space: nowrap;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+      transition: transform 0.3s ease, opacity 0.3s ease;
+      opacity: 0;
+      pointer-events: none;
     }
-    .btn-secondary {
-      background: #2a2a2a;
-      color: #aaa;
-      border: 1px solid #444;
+    #toast.show {
+      transform: translateX(-50%) translateY(0);
+      opacity: 1;
     }
   </style>
 </head>
@@ -84,9 +85,10 @@
   <button class="btn btn-primary" id="saveBtn">保存</button>
   <button class="btn btn-secondary" id="cancelBtn">キャンセル</button>
 
+  <div id="toast">✓ APIキーを保存しました</div>
+
   <script>
     (function() {
-      // Pebble が付加する return_to パラメータを取得する
       function getParam(name) {
         var match = location.search.match(new RegExp('[?&]' + name + '=([^&]*)'));
         return match ? decodeURIComponent(match[1]) : null;
@@ -97,10 +99,21 @@
         location.href = returnTo + '?data=' + encodeURIComponent(JSON.stringify(data));
       }
 
+      function showToast(msg, color, callback) {
+        var toast = document.getElementById('toast');
+        toast.textContent = msg;
+        toast.style.background = color || '#2ecc71';
+        toast.classList.add('show');
+        setTimeout(function() {
+          toast.classList.remove('show');
+          setTimeout(callback || function(){}, 300);
+        }, 1800);
+      }
+
       var savedKey = localStorage.getItem('openai_api_key');
       if (savedKey) {
         document.getElementById('hint').textContent =
-          '現在のキー: ' + savedKey.substring(0, 7) + '****...' + savedKey.slice(-4);
+          '設定済み: ' + savedKey.substring(0, 7) + '****...' + savedKey.slice(-4);
       }
 
       document.getElementById('saveBtn').addEventListener('click', function() {
@@ -109,11 +122,13 @@
           key = savedKey;
         }
         if (!key) {
-          alert('APIキーを入力してください。');
+          showToast('APIキーを入力してください', '#e74c3c');
           return;
         }
         localStorage.setItem('openai_api_key', key);
-        closeConfig({ apiKey: key });
+        showToast('✓ APIキーを保存しました', '#2ecc71', function() {
+          closeConfig({ apiKey: key });
+        });
       });
 
       document.getElementById('cancelBtn').addEventListener('click', function() {
