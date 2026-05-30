@@ -6,126 +6,67 @@
   <title>WristAgent Settings</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: -apple-system, sans-serif;
-      background: #1a1a1a;
-      color: #f0f0f0;
-      padding: 24px 16px;
-      min-height: 100vh;
-    }
-    h1 { font-size: 22px; font-weight: 600; margin-bottom: 8px; }
-    .subtitle { font-size: 13px; color: #888; margin-bottom: 28px; }
-    label {
-      display: block;
-      font-size: 13px;
-      color: #aaa;
-      margin-bottom: 6px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-    input[type="password"] {
-      width: 100%;
-      padding: 12px 14px;
-      background: #2a2a2a;
-      border: 1px solid #444;
-      border-radius: 8px;
-      color: #f0f0f0;
-      font-size: 15px;
-      outline: none;
-      margin-bottom: 8px;
-    }
-    input:focus { border-color: #666; }
-    .hint { font-size: 12px; color: #666; margin-bottom: 28px; }
-    .btn {
-      display: block;
-      width: 100%;
-      padding: 14px;
-      border: none;
-      border-radius: 8px;
-      font-size: 16px;
-      font-weight: 600;
-      cursor: pointer;
-      margin-bottom: 12px;
-    }
-    .btn-primary { background: #4a90d9; color: #fff; }
-    .btn-secondary { background: #2a2a2a; color: #aaa; border: 1px solid #444; }
-    #toast {
-      position: fixed;
-      bottom: 32px;
-      left: 50%;
-      transform: translateX(-50%) translateY(80px);
-      padding: 12px 24px;
-      border-radius: 24px;
-      font-size: 15px;
-      font-weight: 600;
-      white-space: nowrap;
-      box-shadow: 0 4px 16px rgba(0,0,0,0.4);
-      transition: transform 0.3s ease, opacity 0.3s ease;
-      opacity: 0;
-      pointer-events: none;
-      color: #fff;
-    }
-    #toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+    body { font-family: sans-serif; background: #1a1a1a; color: #f0f0f0; padding: 24px 16px; }
+    h1 { font-size: 22px; margin-bottom: 8px; }
+    p { font-size: 13px; color: #888; margin-bottom: 24px; }
+    label { display: block; font-size: 13px; color: #aaa; margin-bottom: 6px; }
+    input { width: 100%; padding: 12px; background: #2a2a2a; border: 1px solid #444;
+            border-radius: 8px; color: #f0f0f0; font-size: 15px; margin-bottom: 24px; }
+    button { display: block; width: 100%; padding: 14px; border: none; border-radius: 8px;
+             font-size: 16px; font-weight: bold; margin-bottom: 12px; cursor: pointer; }
+    #saveBtn { background: #4a90d9; color: #fff; }
+    #cancelBtn { background: #2a2a2a; color: #aaa; border: 1px solid #444; }
+    #dbg { font-size: 11px; color: #666; word-break: break-all; margin-top: 12px; }
   </style>
 </head>
 <body>
-  <h1>WristAgent</h1>
-  <p class="subtitle">OpenAI API設定</p>
+  <h1>WristAgent v4</h1>
+  <p id="hint">OpenAI API設定</p>
 
-  <label for="apiKey">API Key</label>
-  <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off" autocorrect="off" spellcheck="false">
-  <p class="hint" id="hint"></p>
+  <label>API Key</label>
+  <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off">
 
-  <button class="btn btn-primary" id="saveBtn">保存</button>
-  <button class="btn btn-secondary" id="cancelBtn">キャンセル</button>
+  <button id="saveBtn" onclick="doSave()">保存</button>
+  <button id="cancelBtn" onclick="doCancel()">キャンセル</button>
 
-  <div id="toast"></div>
+  <div id="dbg"></div>
 
   <script>
-    (function() {
-      function getParam(name) {
-        var match = location.search.match(new RegExp('[?&]' + name + '=([^&]*)'));
-        return match ? decodeURIComponent(match[1]) : null;
-      }
+    function dbg(msg) {
+      document.getElementById('dbg').textContent += msg + '\n';
+    }
 
-      var returnTo = getParam('return_to') || 'pebblekit://custom';
+    function getParam(name) {
+      var s = location.search || location.href.split('?')[1] || '';
+      var re = new RegExp('[?&]' + name + '=([^&]*)');
+      var m = s.match(re) || (location.href).match(new RegExp('[?&]' + name + '=([^&]*)'));
+      return m ? decodeURIComponent(m[1]) : '';
+    }
 
-      // コンパニオンJSから渡された現在の設定状況を表示
-      var current = getParam('current');
-      if (current) {
-        document.getElementById('hint').textContent = '設定済み: ' + current;
-      }
+    var returnTo = getParam('return_to') || 'pebblekit://custom';
+    var current  = getParam('current');
 
-      function closeConfig(data) {
-        location.href = returnTo + '?data=' + encodeURIComponent(JSON.stringify(data));
-      }
+    dbg('v4 loaded');
+    dbg('returnTo: ' + returnTo);
+    dbg('current: ' + current);
 
-      function showToast(msg, color, callback) {
-        var toast = document.getElementById('toast');
-        toast.textContent = msg;
-        toast.style.background = color;
-        toast.classList.add('show');
-        setTimeout(function() {
-          toast.classList.remove('show');
-          setTimeout(callback || function(){}, 300);
-        }, 1800);
-      }
+    if (current) {
+      document.getElementById('hint').textContent = '設定済み: ' + current;
+    }
 
-      document.getElementById('saveBtn').addEventListener('click', function() {
-        var key = document.getElementById('apiKey').value.trim();
-        if (!key) {
-          showToast('APIキーを入力してください', '#e74c3c');
-          return;
-        }
-        var url = returnTo + '?data=' + encodeURIComponent(JSON.stringify({ apiKey: key }));
-        alert('DEBUG: returnTo=[' + returnTo + ']\n\nURL先頭64文字:\n' + url.substring(0, 64));
-        window.location.replace(url);
-      });
+    function doSave() {
+      dbg('doSave called');
+      var key = document.getElementById('apiKey').value.trim();
+      if (!key) { alert('APIキーを入力してください'); return; }
+      var url = returnTo + '?data=' + encodeURIComponent(JSON.stringify({ apiKey: key }));
+      dbg('redirect to: ' + url.substring(0, 80));
+      window.location.replace(url);
+    }
 
-      document.getElementById('cancelBtn').addEventListener('click', function() {
-        closeConfig({ cancelled: true });
-      });
-    })();
+    function doCancel() {
+      var url = returnTo + '?data=' + encodeURIComponent(JSON.stringify({ cancelled: true }));
+      window.location.replace(url);
+    }
   </script>
 </body>
 </html>
