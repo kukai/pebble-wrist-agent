@@ -160,7 +160,9 @@ Pebble.addEventListener('showConfiguration', function() {
     ? apiKey.substring(0, 7) + '****...' + apiKey.slice(-4)
     : '';
   var url = 'https://kukai.github.io/pebble-wrist-agent/config/' +
-            '?v=6&current=' + encodeURIComponent(masked);
+            '?v=7' +
+            '&return_to=' + encodeURIComponent('pebblejs://close') +
+            '&current=' + encodeURIComponent(masked);
   console.log('[WA] openURL called');
   Pebble.openURL(url);
 });
@@ -170,14 +172,15 @@ Pebble.addEventListener('webviewclosed', function(e) {
   if (!e.response || e.response.length === 0) return;
 
   try {
-    var config = JSON.parse(decodeURIComponent(e.response));
+    var raw = e.response.replace(/^#/, '');
+    var config = JSON.parse(decodeURIComponent(raw));
     if (config.cancelled) return;
     if (config.apiKey) {
       localStorage.setItem('openai_api_key', config.apiKey);
-      console.log('[WA] key saved');
+      console.log('[WA] key saved prefix=' + config.apiKey.substring(0, 7));
       sendStatus('key_saved');
     }
   } catch (err) {
-    console.log('[WA] webviewclosed parse err');
+    console.log('[WA] webviewclosed parse err: ' + err);
   }
 });
