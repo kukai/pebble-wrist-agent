@@ -117,9 +117,8 @@
           showToast('APIキーを入力してください', '#e74c3c');
           return;
         }
-        showToast('✓ 保存してウォッチに反映中...', '#2ecc71', function() {
-          closeConfig({ apiKey: key });
-        });
+        // 即座にリダイレクト（遅延なし）
+        closeConfig({ apiKey: key });
       });
 
       document.getElementById('cancelBtn').addEventListener('click', function() {
