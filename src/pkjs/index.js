@@ -70,12 +70,14 @@ function sendResponse(text) {
 function handleQuery(text) {
   console.log('[WA] handleQuery len=' + text.length);
 
-  var apiKey = HARDCODED_API_KEY || localStorage.getItem('openai_api_key');
+  var lsKey = localStorage.getItem('openai_api_key');
+  console.log('[WA] ls_key=' + (lsKey ? lsKey.substring(0, 7) + '...' : 'null'));
+  var apiKey = HARDCODED_API_KEY || lsKey;
   if (!apiKey) {
     sendStatus('error:no_api_key');
     return;
   }
-  console.log('[WA] apiKey prefix: ' + apiKey.substring(0, 7));
+  console.log('[WA] using key prefix: ' + apiKey.substring(0, 7));
 
   addToHistory('user', text);
 
@@ -133,7 +135,8 @@ function handleQuery(text) {
 }
 
 Pebble.addEventListener('ready', function() {
-  console.log('[WA] PebbleKit JS ready');
+  var stored = localStorage.getItem('openai_api_key');
+  console.log('[WA] ready. ls_key=' + (stored ? stored.substring(0, 7) + '...(len=' + stored.length + ')' : 'null'));
 });
 
 Pebble.addEventListener('appmessage', function(e) {
@@ -150,6 +153,19 @@ Pebble.addEventListener('appmessage', function(e) {
   if (command === 'reset') {
     conversationHistory = [conversationHistory[0]];
     sendStatus('reset_ok');
+  }
+
+  if (command === 'lscheck') {
+    var k = localStorage.getItem('openai_api_key');
+    var msg = k ? 'ls:' + k.substring(0, 7) + '..len' + k.length : 'ls:null';
+    console.log('[WA] lscheck: ' + msg);
+    sendStatus(msg);
+  }
+
+  if (command === 'lsclear') {
+    localStorage.removeItem('openai_api_key');
+    console.log('[WA] ls cleared');
+    sendStatus('ls_cleared');
   }
 });
 
@@ -173,14 +189,23 @@ Pebble.addEventListener('webviewclosed', function(e) {
 
   try {
     var raw = e.response.replace(/^#/, '');
+    console.log('[WA] webviewclosed raw len=' + raw.length + ' prefix=' + raw.substring(0, 20));
     var config = JSON.parse(decodeURIComponent(raw));
-    if (config.cancelled) return;
+    if (config.cancelled) { console.log('[WA] cancelled'); return; }
     if (config.apiKey) {
+      console.log('[WA] writing key prefix=' + config.apiKey.substring(0, 7));
       localStorage.setItem('openai_api_key', config.apiKey);
-      console.log('[WA] key saved prefix=' + config.apiKey.substring(0, 7));
-      sendStatus('key_saved');
+      var verify = localStorage.getItem('openai_api_key');
+      console.log('[WA] verify read=' + (verify ? verify.substring(0, 7) + '...' : 'null'));
+      if (verify === config.apiKey) {
+        sendStatus('key_saved');
+      } else {
+        console.log('[WA] ls write FAILED');
+        sendStatus('error:ls_write_fail');
+      }
     }
   } catch (err) {
     console.log('[WA] webviewclosed parse err: ' + err);
+    sendStatus('error:wvc_parse');
   }
 });
