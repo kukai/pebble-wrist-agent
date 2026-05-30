@@ -102,9 +102,15 @@ static void home_up_long_click(ClickRecognizerRef r, void *ctx) {
   send_reset_command();
 }
 
+static void home_back_click(ClickRecognizerRef r, void *ctx) {
+  // click_config_provider を設定すると Back のデフォルト終了動作が失われるため明示的に終了
+  window_stack_remove(s_window, true);
+}
+
 static void home_click_config(void *ctx) {
   window_single_click_subscribe(BUTTON_ID_SELECT, home_select_click);
   window_long_click_subscribe(BUTTON_ID_UP, 700, home_up_long_click, NULL);
+  window_single_click_subscribe(BUTTON_ID_BACK, home_back_click);
 }
 
 static void confirm_select_click(ClickRecognizerRef r, void *ctx) {
