@@ -155,7 +155,7 @@ Pebble.addEventListener('showConfiguration', function() {
     ? apiKey.substring(0, 7) + '****...' + apiKey.slice(-4)
     : '';
   var url = 'https://kukai.github.io/pebble-wrist-agent/config/' +
-            '?v=3&current=' + encodeURIComponent(masked);
+            '?v=4&current=' + encodeURIComponent(masked);
   Pebble.openURL(url);
 });
 
