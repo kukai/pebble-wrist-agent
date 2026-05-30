@@ -1,6 +1,5 @@
 // WristAgent companion JS - OpenAI API integration and conversation history management
 
-// Numeric keys must match appinfo.json messageKeys exactly
 var KEY_QUERY    = 0;
 var KEY_RESPONSE = 1;
 var KEY_STATUS   = 2;
@@ -11,32 +10,40 @@ var conversationHistory = [
 ];
 var MAX_HISTORY = 10;
 
+// ES5互換: findIndex の代替
+function firstNonSystemIndex() {
+  for (var i = 0; i < conversationHistory.length; i++) {
+    if (conversationHistory[i].role !== 'system') return i;
+  }
+  return -1;
+}
+
+function countNonSystem() {
+  var n = 0;
+  for (var i = 0; i < conversationHistory.length; i++) {
+    if (conversationHistory[i].role !== 'system') n++;
+  }
+  return n;
+}
+
 function addToHistory(role, content) {
   conversationHistory.push({ role: role, content: content });
-  var nonSystem = conversationHistory.filter(function(m) {
-    return m.role !== 'system';
-  });
-  while (nonSystem.length > MAX_HISTORY) {
-    var idx = conversationHistory.findIndex(function(m) {
-      return m.role !== 'system';
-    });
+  while (countNonSystem() > MAX_HISTORY) {
+    var idx = firstNonSystemIndex();
+    if (idx === -1) break;
     conversationHistory.splice(idx, 1);
-    nonSystem = conversationHistory.filter(function(m) {
-      return m.role !== 'system';
-    });
   }
 }
 
-// Retry sendAppMessage once on nack to handle transient ACK timing issues
 function sendWithRetry(dict, label) {
   Pebble.sendAppMessage(dict,
-    function() { console.log('[WristAgent] sent: ' + label); },
+    function() { console.log('[WA] sent: ' + label); },
     function(e) {
-      console.log('[WristAgent] nack for ' + label + ', retrying: ' + JSON.stringify(e));
+      console.log('[WA] nack ' + label + ', retry: ' + JSON.stringify(e));
       setTimeout(function() {
         Pebble.sendAppMessage(dict,
-          function() { console.log('[WristAgent] retry ok: ' + label); },
-          function(e2) { console.log('[WristAgent] retry failed: ' + JSON.stringify(e2)); }
+          function() { console.log('[WA] retry ok: ' + label); },
+          function(e2) { console.log('[WA] retry fail: ' + JSON.stringify(e2)); }
         );
       }, 500);
     }
@@ -44,9 +51,10 @@ function sendWithRetry(dict, label) {
 }
 
 function sendStatus(msg) {
+  console.log('[WA] status: ' + msg);
   var dict = {};
   dict[KEY_STATUS] = msg;
-  sendWithRetry(dict, 'status:' + msg);
+  sendWithRetry(dict, 'status');
 }
 
 function sendResponse(text) {
@@ -56,13 +64,23 @@ function sendResponse(text) {
 }
 
 function handleQuery(text) {
+  console.log('[WA] handleQuery: ' + text);
+
   var apiKey = localStorage.getItem('openai_api_key');
   if (!apiKey) {
-    sendStatus('error:APIキー未設定。設定を開いてください');
+    sendStatus('error:APIキー未設定');
     return;
   }
+  console.log('[WA] apiKey prefix: ' + apiKey.substring(0, 7));
 
   addToHistory('user', text);
+
+  var body = JSON.stringify({
+    model: 'gpt-4o-mini',
+    max_tokens: 200,
+    messages: conversationHistory
+  });
+  console.log('[WA] request body length: ' + body.length);
 
   var req = new XMLHttpRequest();
   req.open('POST', 'https://api.openai.com/v1/chat/completions', true);
@@ -71,44 +89,53 @@ function handleQuery(text) {
   req.timeout = 15000;
 
   req.onload = function() {
+    console.log('[WA] onload status: ' + req.status);
+    console.log('[WA] response: ' + req.responseText.substring(0, 200));
     if (req.status === 200) {
       try {
         var data = JSON.parse(req.responseText);
         var reply = data.choices[0].message.content;
+        console.log('[WA] reply: ' + reply.substring(0, 100));
         addToHistory('assistant', reply);
         sendResponse(reply);
       } catch (err) {
+        console.log('[WA] parse error: ' + err);
         sendStatus('error:レスポンス解析失敗');
       }
     } else {
-      sendStatus('error:API HTTP ' + req.status);
+      // エラー内容の先頭をウォッチに表示
+      var errMsg = 'HTTP ' + req.status;
+      try {
+        var errData = JSON.parse(req.responseText);
+        if (errData.error && errData.error.message) {
+          errMsg = errData.error.message.substring(0, 60);
+        }
+      } catch (e2) {}
+      sendStatus('error:' + errMsg);
     }
   };
 
   req.ontimeout = function() {
+    console.log('[WA] timeout');
     sendStatus('error:タイムアウト');
   };
 
   req.onerror = function() {
+    console.log('[WA] onerror');
     sendStatus('error:ネットワークエラー');
   };
 
-  req.send(JSON.stringify({
-    model: 'gpt-4.1-mini',
-    max_tokens: 200,
-    messages: conversationHistory
-  }));
+  req.send(body);
 }
 
 Pebble.addEventListener('ready', function() {
-  console.log('[WristAgent] PebbleKit JS ready');
+  console.log('[WA] PebbleKit JS ready');
 });
 
 Pebble.addEventListener('appmessage', function(e) {
   var payload = e.payload;
-  console.log('[WristAgent] received: ' + JSON.stringify(payload));
+  console.log('[WA] appmessage: ' + JSON.stringify(payload));
 
-  // Accept both numeric and string key forms
   var query   = payload[KEY_QUERY]   !== undefined ? payload[KEY_QUERY]   : payload.KEY_QUERY;
   var command = payload[KEY_COMMAND] !== undefined ? payload[KEY_COMMAND] : payload.KEY_COMMAND;
 
@@ -132,10 +159,10 @@ Pebble.addEventListener('webviewclosed', function(e) {
       var config = JSON.parse(decodeURIComponent(e.response));
       if (config.apiKey) {
         localStorage.setItem('openai_api_key', config.apiKey);
-        console.log('[WristAgent] API key saved');
+        console.log('[WA] API key saved, prefix: ' + config.apiKey.substring(0, 7));
       }
     } catch (err) {
-      console.log('[WristAgent] config parse error: ' + err);
+      console.log('[WA] config parse error: ' + err);
     }
   }
 });
