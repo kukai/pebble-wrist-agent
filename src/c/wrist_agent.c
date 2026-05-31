@@ -82,6 +82,7 @@ static char      s_answer_title_text[12];
 static void show_screen(Screen screen);
 static void send_query(void);
 static void send_reset_command(void);
+static void send_lscheck_command(void);
 static void refresh_answer_screen(void);
 
 // ---------------------------------------------------------------------------
