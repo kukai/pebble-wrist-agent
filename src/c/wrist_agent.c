@@ -82,7 +82,6 @@ static char      s_answer_title_text[12];
 static void show_screen(Screen screen);
 static void send_query(void);
 static void send_reset_command(void);
-static void send_lscheck_command(void);
 static void refresh_answer_screen(void);
 
 // ---------------------------------------------------------------------------
@@ -148,18 +147,13 @@ static void home_up_long_click(ClickRecognizerRef r, void *ctx) {
   send_reset_command();
 }
 
-static void home_down_long_click(ClickRecognizerRef r, void *ctx) {
-  send_lscheck_command();
-}
-
 static void home_back_click(ClickRecognizerRef r, void *ctx) {
   window_stack_remove(s_window, true);
 }
 
 static void home_click_config(void *ctx) {
   window_single_click_subscribe(BUTTON_ID_SELECT, home_select_click);
-  window_long_click_subscribe(BUTTON_ID_UP,   700, home_up_long_click,   NULL);
-  window_long_click_subscribe(BUTTON_ID_DOWN, 700, home_down_long_click, NULL);
+  window_long_click_subscribe(BUTTON_ID_UP, 700, home_up_long_click, NULL);
   window_single_click_subscribe(BUTTON_ID_BACK, home_back_click);
 }
 
@@ -299,14 +293,6 @@ static void send_reset_command(void) {
   text_layer_set_text(s_home_status_layer, "リセット中...");
 }
 
-static void send_lscheck_command(void) {
-  DictionaryIterator *out;
-  if (app_message_outbox_begin(&out) != APP_MSG_OK) return;
-  dict_write_cstring(out, KEY_COMMAND, "lscheck");
-  app_message_outbox_send();
-  text_layer_set_text(s_home_status_layer, "LS確認中...");
-}
-
 // ---------------------------------------------------------------------------
 // AppMessage receive
 // ---------------------------------------------------------------------------
@@ -335,14 +321,6 @@ static void inbox_received_handler(DictionaryIterator *iter, void *ctx) {
       show_screen(SCREEN_HOME);
     } else if (strcmp(status, "key_saved") == 0) {
       text_layer_set_text(s_home_status_layer, "APIキー保存完了!");
-      show_screen(SCREEN_HOME);
-    } else if (strncmp(status, "ls:", 3) == 0) {
-      strncpy(s_status_buf, status + 3, sizeof(s_status_buf) - 1);
-      s_status_buf[sizeof(s_status_buf) - 1] = '\0';
-      text_layer_set_text(s_home_status_layer, s_status_buf);
-      show_screen(SCREEN_HOME);
-    } else if (strcmp(status, "ls_cleared") == 0) {
-      text_layer_set_text(s_home_status_layer, "LS消去済み");
       show_screen(SCREEN_HOME);
     }
   }
@@ -419,7 +397,7 @@ static void window_load(Window *window) {
   text_layer_set_text(s_home_history_layer, "[履歴: 0件]");
   layer_add_child(root, text_layer_get_layer(s_home_history_layer));
 
-  s_home_status_layer = make_bottom_hint(root, bounds, "U長:reset DN長:lsck");
+  s_home_status_layer = make_bottom_hint(root, bounds, "Up長押し:リセット");
 
   // ── Confirm ───────────────────────────────────────────────────────────────
   s_confirm_title_layer = make_title_bar(root, bounds, "確認");

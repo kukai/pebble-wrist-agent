@@ -155,18 +155,6 @@ Pebble.addEventListener('appmessage', function(e) {
     sendStatus('reset_ok');
   }
 
-  if (command === 'lscheck') {
-    var k = localStorage.getItem('openai_api_key');
-    var msg = k ? 'ls:' + k.substring(0, 7) + '..len' + k.length : 'ls:null';
-    console.log('[WA] lscheck: ' + msg);
-    sendStatus(msg);
-  }
-
-  if (command === 'lsclear') {
-    localStorage.removeItem('openai_api_key');
-    console.log('[WA] ls cleared');
-    sendStatus('ls_cleared');
-  }
 });
 
 Pebble.addEventListener('showConfiguration', function() {
