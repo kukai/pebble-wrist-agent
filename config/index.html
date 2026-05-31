@@ -42,18 +42,16 @@
       document.getElementById('hint').textContent = '設定済み: ' + current;
     }
 
+    var returnTo = getParam('return_to') || 'pebblejs://close';
+
     function doSave() {
       var key = document.getElementById('apiKey').value.trim();
       if (!key) { alert('APIキーを入力してください'); return; }
-      // URLハッシュにデータをセット → 戻るボタンで閉じると e.response に渡される
-      location.hash = encodeURIComponent(JSON.stringify({ apiKey: key }));
-      document.getElementById('status').textContent = '保存しました。戻るボタンで閉じてください。';
-      document.getElementById('saveBtn').disabled = true;
+      document.location = returnTo + '#' + encodeURIComponent(JSON.stringify({ apiKey: key }));
     }
 
     function doCancel() {
-      location.hash = encodeURIComponent(JSON.stringify({ cancelled: true }));
-      history.back();
+      document.location = returnTo + '#' + encodeURIComponent(JSON.stringify({ cancelled: true }));
     }
   </script>
 </body>
