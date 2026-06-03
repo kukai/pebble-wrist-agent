@@ -1,7 +1,7 @@
 #include <pebble.h>
 
 // ---------------------------------------------------------------------------
-// AppMessage key constants (must match appinfo.json messageKeys)
+// AppMessage key constants (must match appinfo.json appKeys)
 // ---------------------------------------------------------------------------
 #define KEY_QUERY    0
 #define KEY_RESPONSE 1
@@ -13,6 +13,14 @@
 // ---------------------------------------------------------------------------
 #define QUERY_BUF_SIZE    512
 #define RESPONSE_BUF_SIZE 512
+
+// ---------------------------------------------------------------------------
+// Conversation history (C-side ring buffer)
+// ---------------------------------------------------------------------------
+#define HIST_CAP    5
+#define HIST_Q_SIZE 128
+#define HIST_A_SIZE 512
+typedef struct { char q[HIST_Q_SIZE]; char a[HIST_A_SIZE]; } HistEntry;
 
 // ---------------------------------------------------------------------------
 // Screen states
@@ -56,11 +64,17 @@ static TextLayer   *s_answer_hint_layer;
 // ---------------------------------------------------------------------------
 static DictationSession *s_dictation_session;
 static Screen            s_current_screen;
-static int               s_history_count;
 
-static char s_query_buf[QUERY_BUF_SIZE];
-static char s_response_buf[RESPONSE_BUF_SIZE];
-static char s_history_text[32];
+static char      s_query_buf[QUERY_BUF_SIZE];
+static char      s_response_buf[RESPONSE_BUF_SIZE];
+static char      s_history_text[32];
+static char      s_status_buf[64];
+
+static HistEntry s_hist[HIST_CAP];
+static int       s_hist_len  = 0;
+static int       s_hist_view = 0;
+static char      s_answer_display[HIST_Q_SIZE + HIST_A_SIZE + 8];
+static char      s_answer_title_text[12];
 
 // ---------------------------------------------------------------------------
 // Forward declarations
@@ -68,24 +82,55 @@ static char s_history_text[32];
 static void show_screen(Screen screen);
 static void send_query(void);
 static void send_reset_command(void);
+static void refresh_answer_screen(void);
+
+// ---------------------------------------------------------------------------
+// History management
+// ---------------------------------------------------------------------------
+static void push_history(const char *q, const char *a) {
+  if (s_hist_len == HIST_CAP) {
+    memmove(s_hist, s_hist + 1, sizeof(HistEntry) * (HIST_CAP - 1));
+    s_hist_len--;
+  }
+  strncpy(s_hist[s_hist_len].q, q, HIST_Q_SIZE - 1);
+  s_hist[s_hist_len].q[HIST_Q_SIZE - 1] = '\0';
+  strncpy(s_hist[s_hist_len].a, a, HIST_A_SIZE - 1);
+  s_hist[s_hist_len].a[HIST_A_SIZE - 1] = '\0';
+  s_hist_len++;
+  s_hist_view = s_hist_len - 1;
+}
+
+static void refresh_answer_screen(void) {
+  if (s_hist_len == 0) return;
+  HistEntry *e = &s_hist[s_hist_view];
+  snprintf(s_answer_display, sizeof(s_answer_display),
+           "Q: %s\n\nA: %s", e->q, e->a);
+  snprintf(s_answer_title_text, sizeof(s_answer_title_text),
+           "%d/%d", s_hist_view + 1, s_hist_len);
+  text_layer_set_text(s_answer_title_layer, s_answer_title_text);
+  text_layer_set_text(s_answer_text_layer, s_answer_display);
+  GRect scroll_bounds = layer_get_bounds(scroll_layer_get_layer(s_answer_scroll_layer));
+  GSize text_size = text_layer_get_content_size(s_answer_text_layer);
+  text_size.h += 8;
+  if (text_size.h < scroll_bounds.size.h) text_size.h = scroll_bounds.size.h;
+  text_layer_set_size(s_answer_text_layer, GSize(scroll_bounds.size.w, text_size.h));
+  scroll_layer_set_content_size(s_answer_scroll_layer, GSize(scroll_bounds.size.w, text_size.h));
+  scroll_layer_set_content_offset(s_answer_scroll_layer, GPointZero, false);
+}
 
 // ---------------------------------------------------------------------------
 // Layer visibility
 // ---------------------------------------------------------------------------
 static void hide_all_screens(void) {
-  // Home
   layer_set_hidden(text_layer_get_layer(s_home_title_layer), true);
   layer_set_hidden(text_layer_get_layer(s_home_hint_layer), true);
   layer_set_hidden(text_layer_get_layer(s_home_history_layer), true);
   layer_set_hidden(text_layer_get_layer(s_home_status_layer), true);
-  // Confirm
   layer_set_hidden(text_layer_get_layer(s_confirm_title_layer), true);
   layer_set_hidden(scroll_layer_get_layer(s_confirm_scroll_layer), true);
   layer_set_hidden(text_layer_get_layer(s_confirm_hint_layer), true);
-  // Loading
   layer_set_hidden(text_layer_get_layer(s_loading_title_layer), true);
   layer_set_hidden(text_layer_get_layer(s_loading_msg_layer), true);
-  // Answer
   layer_set_hidden(text_layer_get_layer(s_answer_title_layer), true);
   layer_set_hidden(scroll_layer_get_layer(s_answer_scroll_layer), true);
   layer_set_hidden(text_layer_get_layer(s_answer_hint_layer), true);
@@ -103,7 +148,6 @@ static void home_up_long_click(ClickRecognizerRef r, void *ctx) {
 }
 
 static void home_back_click(ClickRecognizerRef r, void *ctx) {
-  // click_config_provider を設定すると Back のデフォルト終了動作が失われるため明示的に終了
   window_stack_remove(s_window, true);
 }
 
@@ -147,11 +191,27 @@ static void answer_down_click(ClickRecognizerRef r, void *ctx) {
   scroll_layer_set_content_offset(s_answer_scroll_layer, offset, true);
 }
 
+static void answer_up_long_click(ClickRecognizerRef r, void *ctx) {
+  if (s_hist_view > 0) {
+    s_hist_view--;
+    refresh_answer_screen();
+  }
+}
+
+static void answer_down_long_click(ClickRecognizerRef r, void *ctx) {
+  if (s_hist_view < s_hist_len - 1) {
+    s_hist_view++;
+    refresh_answer_screen();
+  }
+}
+
 static void answer_click_config(void *ctx) {
   window_single_click_subscribe(BUTTON_ID_SELECT, answer_select_click);
   window_single_click_subscribe(BUTTON_ID_BACK, answer_back_click);
   window_single_click_subscribe(BUTTON_ID_UP, answer_up_click);
   window_single_click_subscribe(BUTTON_ID_DOWN, answer_down_click);
+  window_long_click_subscribe(BUTTON_ID_UP, 500, answer_up_long_click, NULL);
+  window_long_click_subscribe(BUTTON_ID_DOWN, 500, answer_down_long_click, NULL);
 }
 
 static void loading_click_config(void *ctx) {}
@@ -165,7 +225,7 @@ static void show_screen(Screen screen) {
 
   switch (screen) {
     case SCREEN_HOME:
-      snprintf(s_history_text, sizeof(s_history_text), "[履歴: %d件]", s_history_count);
+      snprintf(s_history_text, sizeof(s_history_text), "[履歴: %d件]", s_hist_len);
       text_layer_set_text(s_home_history_layer, s_history_text);
       layer_set_hidden(text_layer_get_layer(s_home_title_layer), false);
       layer_set_hidden(text_layer_get_layer(s_home_hint_layer), false);
@@ -196,21 +256,13 @@ static void show_screen(Screen screen) {
       window_set_click_config_provider(s_window, loading_click_config);
       break;
 
-    case SCREEN_ANSWER: {
-      text_layer_set_text(s_answer_text_layer, s_response_buf);
-      GRect scroll_bounds = layer_get_bounds(scroll_layer_get_layer(s_answer_scroll_layer));
-      GSize text_size = text_layer_get_content_size(s_answer_text_layer);
-      text_size.h += 8;
-      if (text_size.h < scroll_bounds.size.h) text_size.h = scroll_bounds.size.h;
-      text_layer_set_size(s_answer_text_layer, GSize(scroll_bounds.size.w, text_size.h));
-      scroll_layer_set_content_size(s_answer_scroll_layer, GSize(scroll_bounds.size.w, text_size.h));
-      scroll_layer_set_content_offset(s_answer_scroll_layer, GPointZero, false);
+    case SCREEN_ANSWER:
+      refresh_answer_screen();
       layer_set_hidden(text_layer_get_layer(s_answer_title_layer), false);
       layer_set_hidden(scroll_layer_get_layer(s_answer_scroll_layer), false);
       layer_set_hidden(text_layer_get_layer(s_answer_hint_layer), false);
       window_set_click_config_provider(s_window, answer_click_config);
       break;
-    }
   }
 }
 
@@ -221,8 +273,9 @@ static void send_query(void) {
   DictionaryIterator *out;
   AppMessageResult result = app_message_outbox_begin(&out);
   if (result != APP_MSG_OK) {
-    snprintf(s_response_buf, sizeof(s_response_buf), "送信エラー: %d", (int)result);
-    show_screen(SCREEN_ANSWER);
+    snprintf(s_status_buf, sizeof(s_status_buf), "send err %d", (int)result);
+    text_layer_set_text(s_home_status_layer, s_status_buf);
+    show_screen(SCREEN_HOME);
     return;
   }
   dict_write_cstring(out, KEY_QUERY, s_query_buf);
@@ -235,7 +288,8 @@ static void send_reset_command(void) {
   if (app_message_outbox_begin(&out) != APP_MSG_OK) return;
   dict_write_cstring(out, KEY_COMMAND, "reset");
   app_message_outbox_send();
-  s_history_count = 0;
+  s_hist_len  = 0;
+  s_hist_view = 0;
   text_layer_set_text(s_home_status_layer, "リセット中...");
 }
 
@@ -249,18 +303,20 @@ static void inbox_received_handler(DictionaryIterator *iter, void *ctx) {
   if (resp_tuple) {
     strncpy(s_response_buf, resp_tuple->value->cstring, RESPONSE_BUF_SIZE - 1);
     s_response_buf[RESPONSE_BUF_SIZE - 1] = '\0';
-    s_history_count += 2;
+    push_history(s_query_buf, s_response_buf);
     show_screen(SCREEN_ANSWER);
   }
 
   if (status_tuple) {
     const char *status = status_tuple->value->cstring;
     if (strncmp(status, "error:", 6) == 0) {
-      strncpy(s_response_buf, status + 6, RESPONSE_BUF_SIZE - 1);
-      s_response_buf[RESPONSE_BUF_SIZE - 1] = '\0';
-      show_screen(SCREEN_ANSWER);
+      strncpy(s_status_buf, status + 6, sizeof(s_status_buf) - 1);
+      s_status_buf[sizeof(s_status_buf) - 1] = '\0';
+      text_layer_set_text(s_home_status_layer, s_status_buf);
+      show_screen(SCREEN_HOME);
     } else if (strcmp(status, "reset_ok") == 0) {
-      s_history_count = 0;
+      s_hist_len  = 0;
+      s_hist_view = 0;
       text_layer_set_text(s_home_status_layer, "Up長押し:リセット");
       show_screen(SCREEN_HOME);
     } else if (strcmp(status, "key_saved") == 0) {
@@ -271,8 +327,9 @@ static void inbox_received_handler(DictionaryIterator *iter, void *ctx) {
 }
 
 static void outbox_failed_handler(DictionaryIterator *iter, AppMessageResult reason, void *ctx) {
-  snprintf(s_response_buf, sizeof(s_response_buf), "送信失敗 (%d)", (int)reason);
-  show_screen(SCREEN_ANSWER);
+  snprintf(s_status_buf, sizeof(s_status_buf), "outbox err %d", (int)reason);
+  text_layer_set_text(s_home_status_layer, s_status_buf);
+  show_screen(SCREEN_HOME);
 }
 
 // ---------------------------------------------------------------------------
@@ -287,7 +344,7 @@ static void dictation_session_callback(DictationSession *session,
     s_query_buf[QUERY_BUF_SIZE - 1] = '\0';
     show_screen(SCREEN_CONFIRM);
   } else {
-    text_layer_set_text(s_home_status_layer, "認識失敗。再試行してください");
+    text_layer_set_text(s_home_status_layer, "認識失敗。再試行を");
     show_screen(SCREEN_HOME);
   }
 }
@@ -356,10 +413,8 @@ static void window_load(Window *window) {
   scroll_layer_add_child(s_confirm_scroll_layer, text_layer_get_layer(s_confirm_text_layer));
   layer_add_child(root, scroll_layer_get_layer(s_confirm_scroll_layer));
 
-  s_confirm_hint_layer = make_bottom_hint(root, bounds, "\xe2\x9c\x93\xe9\x80\x81\xe4\xbf\xa1"
-                                                         "  \xe2\x9c\x97\xe3\x82\x84\xe3\x82\x8a"
-                                                         "\xe7\x9b\xb4\xe3\x81\x97");
-  // UTF-8 for "✓送信  ✗やり直し"
+  s_confirm_hint_layer = make_bottom_hint(root, bounds, "SEL:\xe9\x80\x81\xe4\xbf\xa1  B:\xe3\x82\x84\xe3\x82\x8a\xe7\x9b\xb4\xe3\x81\x97");
+  // UTF-8: "SEL:送信  B:やり直し"
 
   // ── Loading ───────────────────────────────────────────────────────────────
   s_loading_title_layer = make_title_bar(root, bounds, "WristAgent");
@@ -368,12 +423,11 @@ static void window_load(Window *window) {
   text_layer_set_font(s_loading_msg_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
   text_layer_set_text_alignment(s_loading_msg_layer, GTextAlignmentCenter);
   text_layer_set_text(s_loading_msg_layer, "\xe8\x80\x83\xe3\x81\x88\xe4\xb8\xad...");
-  // UTF-8 for "考え中..."
+  // UTF-8: "考え中..."
   layer_add_child(root, text_layer_get_layer(s_loading_msg_layer));
 
   // ── Answer ────────────────────────────────────────────────────────────────
-  s_answer_title_layer = make_title_bar(root, bounds, "AI\xe8\xbf\x94\xe7\xad\x94");
-  // UTF-8 for "AI返答"
+  s_answer_title_layer = make_title_bar(root, bounds, "");
 
   GRect answer_scroll_frame = GRect(0, content_top, bounds.size.w, content_h);
   s_answer_scroll_layer = scroll_layer_create(answer_scroll_frame);
@@ -381,14 +435,14 @@ static void window_load(Window *window) {
 
   s_answer_text_layer = text_layer_create(
     GRect(4, 4, answer_scroll_frame.size.w - 8, answer_scroll_frame.size.h));
-  text_layer_set_font(s_answer_text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
+  text_layer_set_font(s_answer_text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
   text_layer_set_overflow_mode(s_answer_text_layer, GTextOverflowModeWordWrap);
   scroll_layer_add_child(s_answer_scroll_layer, text_layer_get_layer(s_answer_text_layer));
   layer_add_child(root, scroll_layer_get_layer(s_answer_scroll_layer));
 
   s_answer_hint_layer = make_bottom_hint(root, bounds,
-    "\xe2\x86\xa9 \xe6\xac\xa1\xe3\x81\xae\xe8\xb3\xaa\xe5\x95\x8f\xe3\x81\xb8");
-  // UTF-8 for "↩ 次の質問へ"
+    "UP/DN\xe9\x95\xb7:\xe5\x89\x8d\xe5\xbe\x8c  SEL:\xe7\xb5\x82");
+  // UTF-8: "UP/DN長:前後  SEL:終"
 
   // ── Show initial screen ───────────────────────────────────────────────────
   show_screen(SCREEN_HOME);
