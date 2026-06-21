@@ -342,7 +342,7 @@ static void dictation_session_callback(DictationSession *session,
   if (status == DictationSessionStatusSuccess) {
     strncpy(s_query_buf, transcription, QUERY_BUF_SIZE - 1);
     s_query_buf[QUERY_BUF_SIZE - 1] = '\0';
-    show_screen(SCREEN_CONFIRM);
+    send_query();
   } else {
     text_layer_set_text(s_home_status_layer, "認識失敗。再試行を");
     show_screen(SCREEN_HOME);
