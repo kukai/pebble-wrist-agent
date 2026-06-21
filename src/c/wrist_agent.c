@@ -27,7 +27,6 @@ typedef struct { char q[HIST_Q_SIZE]; char a[HIST_A_SIZE]; } HistEntry;
 // ---------------------------------------------------------------------------
 typedef enum {
   SCREEN_HOME,
-  SCREEN_CONFIRM,
   SCREEN_LOADING,
   SCREEN_ANSWER
 } Screen;
@@ -42,12 +41,6 @@ static TextLayer   *s_home_title_layer;
 static TextLayer   *s_home_hint_layer;
 static TextLayer   *s_home_history_layer;
 static TextLayer   *s_home_status_layer;
-
-// Confirm
-static TextLayer   *s_confirm_title_layer;
-static ScrollLayer *s_confirm_scroll_layer;
-static TextLayer   *s_confirm_text_layer;
-static TextLayer   *s_confirm_hint_layer;
 
 // Loading
 static TextLayer   *s_loading_title_layer;
@@ -126,9 +119,6 @@ static void hide_all_screens(void) {
   layer_set_hidden(text_layer_get_layer(s_home_hint_layer), true);
   layer_set_hidden(text_layer_get_layer(s_home_history_layer), true);
   layer_set_hidden(text_layer_get_layer(s_home_status_layer), true);
-  layer_set_hidden(text_layer_get_layer(s_confirm_title_layer), true);
-  layer_set_hidden(scroll_layer_get_layer(s_confirm_scroll_layer), true);
-  layer_set_hidden(text_layer_get_layer(s_confirm_hint_layer), true);
   layer_set_hidden(text_layer_get_layer(s_loading_title_layer), true);
   layer_set_hidden(text_layer_get_layer(s_loading_msg_layer), true);
   layer_set_hidden(text_layer_get_layer(s_answer_title_layer), true);
@@ -155,19 +145,6 @@ static void home_click_config(void *ctx) {
   window_single_click_subscribe(BUTTON_ID_SELECT, home_select_click);
   window_long_click_subscribe(BUTTON_ID_UP, 700, home_up_long_click, NULL);
   window_single_click_subscribe(BUTTON_ID_BACK, home_back_click);
-}
-
-static void confirm_select_click(ClickRecognizerRef r, void *ctx) {
-  send_query();
-}
-
-static void confirm_back_click(ClickRecognizerRef r, void *ctx) {
-  show_screen(SCREEN_HOME);
-}
-
-static void confirm_click_config(void *ctx) {
-  window_single_click_subscribe(BUTTON_ID_SELECT, confirm_select_click);
-  window_single_click_subscribe(BUTTON_ID_BACK, confirm_back_click);
 }
 
 static void answer_select_click(ClickRecognizerRef r, void *ctx) {
@@ -233,22 +210,6 @@ static void show_screen(Screen screen) {
       layer_set_hidden(text_layer_get_layer(s_home_status_layer), false);
       window_set_click_config_provider(s_window, home_click_config);
       break;
-
-    case SCREEN_CONFIRM: {
-      text_layer_set_text(s_confirm_text_layer, s_query_buf);
-      GRect scroll_bounds = layer_get_bounds(scroll_layer_get_layer(s_confirm_scroll_layer));
-      GSize text_size = text_layer_get_content_size(s_confirm_text_layer);
-      text_size.h += 8;
-      if (text_size.h < scroll_bounds.size.h) text_size.h = scroll_bounds.size.h;
-      text_layer_set_size(s_confirm_text_layer, GSize(scroll_bounds.size.w, text_size.h));
-      scroll_layer_set_content_size(s_confirm_scroll_layer, GSize(scroll_bounds.size.w, text_size.h));
-      scroll_layer_set_content_offset(s_confirm_scroll_layer, GPointZero, false);
-      layer_set_hidden(text_layer_get_layer(s_confirm_title_layer), false);
-      layer_set_hidden(scroll_layer_get_layer(s_confirm_scroll_layer), false);
-      layer_set_hidden(text_layer_get_layer(s_confirm_hint_layer), false);
-      window_set_click_config_provider(s_window, confirm_click_config);
-      break;
-    }
 
     case SCREEN_LOADING:
       layer_set_hidden(text_layer_get_layer(s_loading_title_layer), false);
@@ -399,23 +360,6 @@ static void window_load(Window *window) {
 
   s_home_status_layer = make_bottom_hint(root, bounds, "Up長押し:リセット");
 
-  // ── Confirm ───────────────────────────────────────────────────────────────
-  s_confirm_title_layer = make_title_bar(root, bounds, "確認");
-
-  GRect confirm_scroll_frame = GRect(0, content_top, bounds.size.w, content_h);
-  s_confirm_scroll_layer = scroll_layer_create(confirm_scroll_frame);
-  scroll_layer_set_shadow_hidden(s_confirm_scroll_layer, true);
-
-  s_confirm_text_layer = text_layer_create(
-    GRect(4, 4, confirm_scroll_frame.size.w - 8, confirm_scroll_frame.size.h));
-  text_layer_set_font(s_confirm_text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
-  text_layer_set_overflow_mode(s_confirm_text_layer, GTextOverflowModeWordWrap);
-  scroll_layer_add_child(s_confirm_scroll_layer, text_layer_get_layer(s_confirm_text_layer));
-  layer_add_child(root, scroll_layer_get_layer(s_confirm_scroll_layer));
-
-  s_confirm_hint_layer = make_bottom_hint(root, bounds, "SEL:\xe9\x80\x81\xe4\xbf\xa1  B:\xe3\x82\x84\xe3\x82\x8a\xe7\x9b\xb4\xe3\x81\x97");
-  // UTF-8: "SEL:送信  B:やり直し"
-
   // ── Loading ───────────────────────────────────────────────────────────────
   s_loading_title_layer = make_title_bar(root, bounds, "WristAgent");
 
@@ -453,11 +397,6 @@ static void window_unload(Window *window) {
   text_layer_destroy(s_home_hint_layer);
   text_layer_destroy(s_home_history_layer);
   text_layer_destroy(s_home_status_layer);
-
-  text_layer_destroy(s_confirm_title_layer);
-  text_layer_destroy(s_confirm_text_layer);
-  scroll_layer_destroy(s_confirm_scroll_layer);
-  text_layer_destroy(s_confirm_hint_layer);
 
   text_layer_destroy(s_loading_title_layer);
   text_layer_destroy(s_loading_msg_layer);
