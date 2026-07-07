@@ -77,6 +77,10 @@ ANSWER: UP/DOWN長押し(500ms) → 履歴前後移動
 - リトライ: NACK 時に 500 ms 後 1 回のみ再送
 - system プロンプト: `"You are a helpful assistant on a smartwatch. Answer concisely."`
 
+## GitHub 運用ルール
+
+- PR の本文（description）は **日本語** で記述する。タイトルは英語。
+
 ## ドキュメント運用
 
 - **SPECS.md** — 現行仕様のスナップショット。仕様変更時に上書き更新。
