@@ -53,9 +53,6 @@ ANSWER: UP/DOWN短押し → スクロール±30px
 ANSWER: UP/DOWN長押し(500ms) → 履歴前後移動
 ```
 
-認識成功時は即 LOADING を表示し、クエリ送信は 300 ms 遅延して実行する
-（音声セッション解体中の AppMessage 競合回避、ADR-012 参照）。
-
 ## 重要な制約・注意事項
 
 - **ES5 必須**: コンパニオン JS は PebbleKit JS ランタイムが ES5 のため、アロー関数・`const`/`let`・`Array.prototype.findIndex` 等は使用不可。
@@ -71,13 +68,16 @@ ANSWER: UP/DOWN長押し(500ms) → 履歴前後移動
 3. `HARDCODED_API_KEY` 変数（開発テスト用、デフォルト空文字）が優先
 4. キー未設定時は `error:no_api_key` をウォッチに送信
 
+**注意**: PebbleKit JS の localStorage はアプリ UUID ごとに分離される。
+`appinfo.json` の UUID を変更すると保存済みキーは参照できなくなり、
+設定 UI からの再入力が必要（ADR-012 参照）。
+
 ## OpenAI 連携
 
 - モデル: `gpt-4o-mini`
 - `max_tokens`: 200
 - タイムアウト: 15,000 ms
-- リトライ（JS→Watch）: NACK 時に 500 ms 後 1 回のみ再送
-- リトライ（Watch→Phone クエリ送信）: BUSY/NACK 時に 500 ms 間隔で最大 2 回再送（計 3 試行）
+- リトライ: NACK 時に 500 ms 後 1 回のみ再送
 - system プロンプト: `"You are a helpful assistant on a smartwatch. Answer concisely."`
 
 ## GitHub 運用ルール

@@ -56,9 +56,6 @@
 
 "考え中..." を表示。操作無効（ボタン設定なし）。
 
-音声認識成功時は即座にこの画面へ遷移し、クエリ送信自体は 300 ms 遅延して
-実行する（音声セッション解体中の AppMessage 競合回避。ADR-012 参照）。
-
 ### 3.3 ANSWER
 
 Q&A ペアをスクロール表示。タイトルバーに "現在位置/総件数" を表示。
@@ -104,14 +101,6 @@ Phone → Watch: { KEY_STATUS: "key_saved" }
 | C レスポンスバッファ | 512 bytes |
 | JS 応答トリム上限 | 500 文字 |
 
-### 4.4 送信信頼性（リトライ）
-
-| 経路                         | 挙動                                                       |
-|------------------------------|------------------------------------------------------------|
-| Watch → Phone（KEY_QUERY）   | 認識成功後 300 ms 遅延送信。BUSY/NACK 時は 500 ms 間隔で最大 2 回再送（計 3 試行）。上限超過で `send err N` / `outbox err N` を表示し HOME へ |
-| Watch → Phone（KEY_COMMAND） | リトライなし（失敗時は `outbox err N` 表示）               |
-| Phone → Watch（全メッセージ）| NACK 時 500 ms 後に 1 回再送（`sendWithRetry`）            |
-
 ## 5. 会話履歴
 
 ### 5.1 ウォッチ側（C）
@@ -148,6 +137,10 @@ Phone → Watch: { KEY_STATUS: "key_saved" }
 4. 書き込み検証: `getItem` で読み返して一致チェック
 5. 成功時 `key_saved`、失敗時 `error:ls_write_fail` を送信
 6. `HARDCODED_API_KEY` 変数（開発用、空文字がデフォルト）が localStorage より優先
+
+注意: PebbleKit JS の localStorage はアプリ UUID ごとに分離されるため、
+`appinfo.json` の UUID を変更すると保存済みキーは参照できなくなる。
+UUID 変更後は設定 UI からキーを再入力すること（ADR-012 参照）。
 
 ## 8. 設定 Web UI
 

@@ -15,13 +15,6 @@
 #define RESPONSE_BUF_SIZE 512
 
 // ---------------------------------------------------------------------------
-// Query send timing (see ADR-012)
-// ---------------------------------------------------------------------------
-#define QUERY_SEND_DEFER_MS     300  // 音声セッション解体との競合回避のための遅延
-#define QUERY_SEND_RETRY_MS     500
-#define QUERY_SEND_MAX_ATTEMPTS 3    // 初回 + リトライ2回
-
-// ---------------------------------------------------------------------------
 // Conversation history (C-side ring buffer)
 // ---------------------------------------------------------------------------
 #define HIST_CAP    5
@@ -69,8 +62,6 @@ static char      s_query_buf[QUERY_BUF_SIZE];
 static char      s_response_buf[RESPONSE_BUF_SIZE];
 static char      s_history_text[32];
 static char      s_status_buf[64];
-
-static int       s_send_attempts;
 
 static HistEntry s_hist[HIST_CAP];
 static int       s_hist_len  = 0;
@@ -239,19 +230,10 @@ static void show_screen(Screen screen) {
 // ---------------------------------------------------------------------------
 // AppMessage send helpers
 // ---------------------------------------------------------------------------
-static void send_query_timer_cb(void *ctx) {
-  send_query();
-}
-
 static void send_query(void) {
-  s_send_attempts++;
   DictionaryIterator *out;
   AppMessageResult result = app_message_outbox_begin(&out);
   if (result != APP_MSG_OK) {
-    if (s_send_attempts < QUERY_SEND_MAX_ATTEMPTS) {
-      app_timer_register(QUERY_SEND_RETRY_MS, send_query_timer_cb, NULL);
-      return;
-    }
     snprintf(s_status_buf, sizeof(s_status_buf), "send err %d", (int)result);
     text_layer_set_text(s_home_status_layer, s_status_buf);
     show_screen(SCREEN_HOME);
@@ -306,11 +288,6 @@ static void inbox_received_handler(DictionaryIterator *iter, void *ctx) {
 }
 
 static void outbox_failed_handler(DictionaryIterator *iter, AppMessageResult reason, void *ctx) {
-  // LOADING 中の失敗はクエリ送信の NACK なので再送する（JS 側 sendWithRetry と対称）
-  if (s_current_screen == SCREEN_LOADING && s_send_attempts < QUERY_SEND_MAX_ATTEMPTS) {
-    app_timer_register(QUERY_SEND_RETRY_MS, send_query_timer_cb, NULL);
-    return;
-  }
   snprintf(s_status_buf, sizeof(s_status_buf), "outbox err %d", (int)reason);
   text_layer_set_text(s_home_status_layer, s_status_buf);
   show_screen(SCREEN_HOME);
@@ -326,11 +303,7 @@ static void dictation_session_callback(DictationSession *session,
   if (status == DictationSessionStatusSuccess) {
     strncpy(s_query_buf, transcription, QUERY_BUF_SIZE - 1);
     s_query_buf[QUERY_BUF_SIZE - 1] = '\0';
-    // 音声セッションの解体中に AppMessage を送ると BUSY/NACK になりやすいため、
-    // LOADING 表示だけ先に行い送信はタイマーで遅延させる (ADR-012)
-    s_send_attempts = 0;
-    show_screen(SCREEN_LOADING);
-    app_timer_register(QUERY_SEND_DEFER_MS, send_query_timer_cb, NULL);
+    send_query();
   } else {
     text_layer_set_text(s_home_status_layer, "認識失敗。再試行を");
     show_screen(SCREEN_HOME);
