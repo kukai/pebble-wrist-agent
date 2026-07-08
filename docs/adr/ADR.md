@@ -112,3 +112,16 @@
 - **決定**: デバッグ用の `lscheck` / `lsclear` コマンドハンドラを `index.js` から削除する。
 - **理由**: 本番アプリに不要なデバッグ UI はコードサイズを増やし、誤操作リスクになる。診断は `pebble logs` で十分。
 - **トレードオフ**: localStorage の状態を手動確認する手段が失われる（開発時は `pebble logs` で代替）。
+
+---
+
+## ADR-012: クエリ送信を dictation コールバックから遅延実行し、ウォッチ側リトライを追加する
+
+- **日付**: 2026-07-08
+- **状態**: 採用（ADR-011 の実装方式を修正。CONFIRM 廃止という決定自体は維持）
+- **決定**:
+  - 音声認識成功時、`dictation_session_callback` 内から `send_query()` を直接呼ばず、LOADING 画面表示後に `app_timer_register` で 300 ms 遅延して送信する。
+  - ウォッチ側クエリ送信にリトライを追加する。`app_message_outbox_begin` の失敗（BUSY 等）および送信 NACK（`outbox_failed_handler`、LOADING 画面中のみ）を対象に、500 ms 間隔で最大 2 回再送（計 3 試行）。上限超過時のみエラー表示して HOME に戻る。
+- **理由**: ADR-011 の実装（コールバック内即時送信）は、システム音声 UI の解体・Bluetooth 上の音声セッション後始末と AppMessage 送信が競合し、BUSY/NACK で送信が失敗する。ウォッチ側に再送機構がなかったため 1 回の失敗で STT→AI リクエストのフローが消失していた（旧フローでは CONFIRM 画面でのボタン押下が挟まり、偶然この競合が回避されていた）。
+- **トレードオフ**: 送信開始が 300 ms 遅れるが、LOADING 表示を先行させるため体感上の差はない。リトライにより最悪ケースでは失敗確定まで約 1.3 秒余分にかかる。
+- **補足**: PR #3 で `appinfo.json` の UUID を変更したため、PebbleKit JS の localStorage（UUID ごとに分離）に保存済みの API キーは引き継がれない。UUID 変更後は設定 UI から API キーの再入力が必要。
