@@ -123,3 +123,14 @@
 - **原因**: PR #3 で `appinfo.json` の UUID をプレースホルダから CloudPebble の UUID に変更した。PebbleKit JS の localStorage はアプリ UUID ごとに分離されるため、旧 UUID 時代に保存した `openai_api_key` が参照できなくなった。スマホアプリの設定画面にはキーが保存済みのように見えていたが、これは表示キャッシュであり実体は失われていた。
 - **決定**: ウォッチ側コードは変更しない（遅延送信・リトライは実機で不要と確認されたため導入を撤回）。UUID 変更を伴うリリース時は、設定 UI から API キーを再入力する運用とし、CLAUDE.md / SPECS.md に注意事項として明記する。
 - **教訓**: 認識成功後にフローが止まった場合、`pebble logs` で `[WA] handleQuery` の有無を確認すれば「ウォッチ→スマホ送信の問題」か「API キー/OpenAI 側の問題」かを即座に切り分けられる。
+
+---
+
+## ADR-013: 天気ツール（function calling）を Open-Meteo で実装する
+
+- **日付**: 2026-07-09
+- **状態**: 採用
+- **決定**: OpenAI function calling で `get_weather(location?, date?)` ツールを追加する。天気データは Open-Meteo（Geocoding API + Forecast API）を使用し、場所未指定時は `navigator.geolocation` の現在地を使う（appinfo の `capabilities` に `location` を追加）。ツール実行 → 再問い合わせは最大 2 ラウンドに制限。tool 往復メッセージ（assistant の `tool_calls` / role=`tool`）は会話履歴に永続化せず、履歴には user と最終 assistant 応答のみ保存する。system プロンプトには毎リクエスト今日の日付を注入する（「明日」「週末」等の相対日付を LLM が解決するため）。
+- **理由**: Open-Meteo は API キー不要のため、既存の OpenAI キー以外に秘密情報の管理を増やさない（設定 UI の変更も不要）。tool メッセージを履歴に残すと `MAX_HISTORY` トリムで assistant(`tool_calls`)/tool のペアが分断され OpenAI API がリクエストを拒否するため、永続化しない設計とした。
+- **トレードオフ**: ツール利用時はレイテンシが増える（OpenAI → 位置解決 → 天気 API → OpenAI。各段にタイムアウトあり、最悪 ~50 秒）。商用天気 API と比べ地点精度・詳細度は限定的。ツール定義の分だけ毎リクエストの入力トークンが増える。
+- **補足**: タイマーツールは未実装。実現にはウォッチ側の Wakeup API 対応（新 AppMessage キー、C 側のタイマー管理・通知 UI）が必要なため、別 ADR として検討する。

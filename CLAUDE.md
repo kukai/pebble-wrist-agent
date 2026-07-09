@@ -78,7 +78,11 @@ ANSWER: UP/DOWN長押し(500ms) → 履歴前後移動
 - `max_tokens`: 200
 - タイムアウト: 15,000 ms
 - リトライ: NACK 時に 500 ms 後 1 回のみ再送
-- system プロンプト: `"You are a helpful assistant on a smartwatch. Answer concisely."`
+- system プロンプト: `"You are a helpful assistant on a smartwatch. Answer concisely."`（毎リクエスト、相対日付解決用に今日の日付を付加）
+- ツール (function calling): `get_weather(location?, date?)` — Open-Meteo（ジオコーディング + 予報、API キー不要）
+  - 場所未指定時は `navigator.geolocation` の現在地を使用（appinfo の `capabilities` に `location` が必須）
+  - ツール実行 → 再問い合わせは最大 2 ラウンド（超過で `error:tool_loop`）
+  - tool 往復メッセージは会話履歴に永続化しない（トリムで assistant/tool ペアが壊れるのを防ぐ。ADR-013 参照）
 
 ## GitHub 運用ルール
 

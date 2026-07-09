@@ -3,7 +3,7 @@
 > このファイルは現行仕様のスナップショット。仕様変更時に上書き更新する。
 > 決定の経緯は `docs/adr/ADR.md` を参照。
 
-最終更新: 2026-07-08
+最終更新: 2026-07-09
 
 ---
 
@@ -126,8 +126,28 @@ Phone → Watch: { KEY_STATUS: "key_saved" }
 | モデル         | `gpt-4o-mini`                                   |
 | max_tokens     | 200                                             |
 | タイムアウト   | 15,000 ms                                       |
-| system 指示    | "You are a helpful assistant on a smartwatch. Answer concisely." |
+| system 指示    | "You are a helpful assistant on a smartwatch. Answer concisely." + 今日の日付 |
 | リトライ       | NACK 時 500 ms 後に 1 回再送（sendWithRetry）   |
+| ツール         | `get_weather`（6.1 参照）。実行は最大 2 ラウンド |
+
+### 6.1 get_weather ツール
+
+OpenAI function calling で宣言。天気・気温・降水・風に関する質問で LLM が呼び出す。
+
+| 項目       | 内容                                                          |
+|------------|---------------------------------------------------------------|
+| 引数       | `location`（省略時は現在地）, `date`（YYYY-MM-DD、省略時は当日）|
+| 現在地     | `navigator.geolocation`（appinfo `capabilities: ["location"]`）|
+| ジオコーディング | Open-Meteo Geocoding API（`language=ja`, `count=1`）     |
+| 予報       | Open-Meteo Forecast API（daily: 天気コード・最高/最低気温・最大降水確率・最大風速、`timezone=auto`）|
+| 期間       | 16 日先まで（Open-Meteo の予報範囲）                           |
+| API キー   | 不要                                                          |
+| タイムアウト | 各 HTTP 10 s                                                 |
+| エラー     | 失敗内容を tool 結果として LLM に渡し文章化させる。ツールラウンド超過時のみ `error:tool_loop` |
+
+tool 往復メッセージ（assistant の `tool_calls` / role=`tool`）は会話履歴に
+永続化せず、履歴には user と最終 assistant 応答のみ保存する
+（MAX_HISTORY トリムでペアが分断されると OpenAI API がエラーになるため）。
 
 ## 7. API キー管理
 
