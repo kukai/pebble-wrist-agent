@@ -81,6 +81,7 @@ typedef struct { const char *title; FixedMenuCallback callback; } FixedMenuItem;
 static void menu_item_history(void);
 static void menu_item_timer(void);
 static void menu_item_stopwatch(void);
+static void menu_item_weather(void);
 
 // セクション3の固定項目。将来は配列に追記するだけで行が増える。
 static const FixedMenuItem s_fixed_items[] = {
@@ -91,6 +92,8 @@ static const FixedMenuItem s_fixed_items[] = {
   { "\xe3\x82\xb9\xe3\x83\x88\xe3\x83\x83\xe3\x83\x97\xe3\x82\xa6\xe3\x82\xa9\xe3\x83\x83\xe3\x83\x81",
     menu_item_stopwatch },
   // UTF-8: "ストップウォッチ"
+  { "\xe5\xa4\xa9\xe6\xb0\x97", menu_item_weather },
+  // UTF-8: "天気"
 };
 
 // ---------------------------------------------------------------------------
@@ -127,6 +130,7 @@ static ActionMenuLevel *s_am_root;
 static int              s_am_slot = -1;
 static bool              s_open_timer_picker_pending = false;
 static bool              s_open_new_sw_pending = false;
+static int               s_open_slot_pending = -1;  // did_close 後に開くスロット番号
 
 // HOME click config: menu_layer_set_click_config_onto_window() owns UP/DOWN/
 // SELECT; we chain onto its provider once and add an explicit BACK handler
@@ -162,8 +166,9 @@ static void refresh_answer_screen(void);
 static void refresh_home_menu(void);
 static void set_home_status(const char *text);
 static void open_timer_duration_picker(void);
-static void handle_timer_set(int32_t seconds, const char *label, bool set_pending_home);
-static void handle_stopwatch_start(const char *label, bool set_pending_home);
+static void open_slot_action_menu(int slot_idx);
+static int handle_timer_set(int32_t seconds, const char *label, bool set_pending_home);
+static int handle_stopwatch_start(const char *label, bool set_pending_home);
 static void clear_history(void);
 static void persist_history(void);
 
@@ -475,14 +480,22 @@ static void am_did_close(ActionMenu *menu, const ActionMenuItem *item, void *con
     action_menu_hierarchy_destroy(s_am_root, NULL, NULL);
     s_am_root = NULL;
   }
-  // 「新しいタイマー/SW」が選ばれていた場合、この ActionMenu が完全に閉じてから
-  // 次の ActionMenu を開く（開いたままの二重起動を避けるため did_close まで遅延する）
+  // 「新しいタイマー/SW」が選ばれていた場合や、タイマー設定画面でプリセットが
+  // 選ばれた場合、この ActionMenu が完全に閉じてから次の画面を開く
+  // （開いたままの二重起動を避けるため did_close まで遅延する）。
+  // 新規作成後は S2 に行が増えるだけで終わらせず、作成したスロットの
+  // ActionMenu をそのまま開いて操作メニュー自体を更新する。
   if (s_open_timer_picker_pending) {
     s_open_timer_picker_pending = false;
     open_timer_duration_picker();
   } else if (s_open_new_sw_pending) {
     s_open_new_sw_pending = false;
-    handle_stopwatch_start(NULL, false);
+    int idx = handle_stopwatch_start(NULL, false);
+    if (idx >= 0) open_slot_action_menu(idx);
+  } else if (s_open_slot_pending >= 0) {
+    int idx = s_open_slot_pending;
+    s_open_slot_pending = -1;
+    open_slot_action_menu(idx);
   }
 }
 
@@ -648,7 +661,9 @@ static const TimerPreset s_timer_presets[] = {
 
 static void tp_action(ActionMenu *am, const ActionMenuItem *item, void *ctx) {
   int32_t seconds = (int32_t)(intptr_t)action_menu_item_get_action_data(item);
-  handle_timer_set(seconds, NULL, false);
+  int idx = handle_timer_set(seconds, NULL, false);
+  // このピッカー自身の did_close (am_did_close) が呼ばれてから開く
+  if (idx >= 0) s_open_slot_pending = idx;
 }
 
 static void open_timer_duration_picker(void) {
@@ -702,7 +717,18 @@ static void menu_item_stopwatch(void) {
       return;
     }
   }
-  handle_stopwatch_start(NULL, false);
+  int idx = handle_stopwatch_start(NULL, false);
+  if (idx >= 0) open_slot_action_menu(idx);
+}
+
+// 音声を使わず「今日の天気を教えて」を送信する。既存の get_weather ツール（JS 側）が
+// 応答するため、ここでは通常の音声質問と同じ send_query() の経路をそのまま再利用する。
+static void menu_item_weather(void) {
+  snprintf(s_query_buf, QUERY_BUF_SIZE, "%s",
+    "\xe4\xbb\x8a\xe6\x97\xa5\xe3\x81\xae\xe5\xa4\xa9\xe6\xb0\x97\xe3\x82\x92"
+    "\xe6\x95\x99\xe3\x81\x88\xe3\x81\xa6");
+  // UTF-8: "今日の天気を教えて"
+  send_query();
 }
 
 static void menu_select_callback(MenuLayer *menu, MenuIndex *index, void *ctx) {
@@ -903,12 +929,13 @@ static void send_reset_command(void) {
 // ---------------------------------------------------------------------------
 // AppMessage receive
 // ---------------------------------------------------------------------------
-static void handle_timer_set(int32_t seconds, const char *label, bool set_pending_home) {
+// 成功時は作成したスロット番号、失敗時は -1 を返す
+static int handle_timer_set(int32_t seconds, const char *label, bool set_pending_home) {
   int idx = find_free_slot();
   if (idx < 0) {
     set_home_status("\xe3\x82\xbf\xe3\x82\xa4\xe3\x83\x9e\xe3\x83\xbc\xe6\x9e\xa0"
                     "\xe6\xba\x80\xe6\x9d\xaf");  // UTF-8: "タイマー枠満杯"
-    return;
+    return -1;
   }
   Slot *s = &s_slots[idx];
   memset(s, 0, sizeof(Slot));
@@ -925,18 +952,20 @@ static void handle_timer_set(int32_t seconds, const char *label, bool set_pendin
     persist_slot(idx);
     if (set_pending_home) s_pending_home = true;
     refresh_home_menu();
-  } else {
-    clear_slot(idx);
-    set_home_status("\xe4\xba\x88\xe7\xb4\x84\xe5\xa4\xb1\xe6\x95\x97");  // "予約失敗"
+    return idx;
   }
+  clear_slot(idx);
+  set_home_status("\xe4\xba\x88\xe7\xb4\x84\xe5\xa4\xb1\xe6\x95\x97");  // "予約失敗"
+  return -1;
 }
 
-static void handle_stopwatch_start(const char *label, bool set_pending_home) {
+// 成功時は作成したスロット番号、失敗時は -1 を返す
+static int handle_stopwatch_start(const char *label, bool set_pending_home) {
   int idx = find_free_slot();
   if (idx < 0) {
     set_home_status("\xe3\x82\xbf\xe3\x82\xa4\xe3\x83\x9e\xe3\x83\xbc\xe6\x9e\xa0"
                     "\xe6\xba\x80\xe6\x9d\xaf");  // UTF-8: "タイマー枠満杯"
-    return;
+    return -1;
   }
   Slot *s = &s_slots[idx];
   memset(s, 0, sizeof(Slot));
@@ -952,6 +981,7 @@ static void handle_stopwatch_start(const char *label, bool set_pending_home) {
   persist_slot(idx);
   if (set_pending_home) s_pending_home = true;
   refresh_home_menu();
+  return idx;
 }
 
 static void inbox_received_handler(DictionaryIterator *iter, void *ctx) {
