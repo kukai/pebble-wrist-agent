@@ -4,10 +4,13 @@
 var HARDCODED_API_KEY = ''; // ← ここに sk-... を記入
 // ===========================================
 
-var KEY_QUERY    = 0;
-var KEY_RESPONSE = 1;
-var KEY_STATUS   = 2;
-var KEY_COMMAND  = 3;
+var KEY_QUERY           = 0;
+var KEY_RESPONSE        = 1;
+var KEY_STATUS          = 2;
+var KEY_COMMAND         = 3;
+var KEY_TIMER_SET       = 4;
+var KEY_TIMER_LABEL     = 5;
+var KEY_STOPWATCH_START = 6;
 
 var conversationHistory = [
   { role: 'system', content: 'You are a helpful assistant on a smartwatch. Answer concisely.' }
@@ -90,6 +93,46 @@ var OPENAI_TOOLS = [
             type: 'string',
             description: 'Target date in YYYY-MM-DD. Omit for today. ' +
               'Forecasts are available up to 16 days ahead.'
+          }
+        }
+      }
+    }
+  },
+  {
+    type: 'function',
+    'function': {
+      name: 'set_timer',
+      description: 'Set a countdown timer on the smartwatch. ' +
+        'Use this when the user asks for a timer, e.g. "12分タイマーして".',
+      parameters: {
+        type: 'object',
+        properties: {
+          duration_seconds: {
+            type: 'integer',
+            description: 'Timer length in seconds. Minimum 30.'
+          },
+          label: {
+            type: 'string',
+            description: "Short label for the timer, e.g. 'パスタ'. " +
+              'Omit if the user gave no purpose.'
+          }
+        },
+        required: ['duration_seconds']
+      }
+    }
+  },
+  {
+    type: 'function',
+    'function': {
+      name: 'start_stopwatch',
+      description: 'Start a stopwatch on the smartwatch. ' +
+        'Use this when the user asks to start a stopwatch, e.g. "ストップウォッチ開始".',
+      parameters: {
+        type: 'object',
+        properties: {
+          label: {
+            type: 'string',
+            description: 'Short label for the stopwatch. Omit if none given.'
           }
         }
       }
@@ -200,6 +243,30 @@ function getWeather(args, cb) {
   });
 }
 
+// set_timer ツール本体。ウォッチに AppMessage を送り、ack は待たず楽観的に
+// tool 結果を返す（Wakeup 予約の失敗はウォッチ側ステータス表示で通知される）
+function setTimerOnWatch(args, cb) {
+  var secs = parseInt(args.duration_seconds, 10);
+  if (!secs || secs <= 0) {
+    cb(JSON.stringify({ error: 'invalid_duration' }));
+    return;
+  }
+  var dict = {};
+  dict[KEY_TIMER_SET] = secs;
+  dict[KEY_TIMER_LABEL] = args.label ? String(args.label) : '';
+  sendWithRetry(dict, 'timer_set');
+  cb(JSON.stringify({ status: 'scheduled', duration_seconds: secs }));
+}
+
+// start_stopwatch ツール本体。同じく楽観的に即時返却する
+function startStopwatchOnWatch(args, cb) {
+  var dict = {};
+  dict[KEY_STOPWATCH_START] = 1;
+  dict[KEY_TIMER_LABEL] = args.label ? String(args.label) : '';
+  sendWithRetry(dict, 'stopwatch_start');
+  cb(JSON.stringify({ status: 'started' }));
+}
+
 // assistant の tool_calls をすべて実行し、結果を添えて再問い合わせする
 function executeToolCalls(assistantMsg, apiKey, extraMessages, round) {
   extraMessages.push(assistantMsg);
@@ -224,6 +291,10 @@ function executeToolCalls(assistantMsg, apiKey, extraMessages, round) {
       try { args = JSON.parse(fn.arguments || '{}'); } catch (e) {}
       if (fn.name === 'get_weather') {
         getWeather(args, function(content) { finish(idx, content); });
+      } else if (fn.name === 'set_timer') {
+        setTimerOnWatch(args, function(content) { finish(idx, content); });
+      } else if (fn.name === 'start_stopwatch') {
+        startStopwatchOnWatch(args, function(content) { finish(idx, content); });
       } else {
         finish(idx, JSON.stringify({ error: 'unknown_tool' }));
       }

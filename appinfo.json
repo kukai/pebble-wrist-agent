@@ -18,7 +18,10 @@
     "KEY_QUERY": 0,
     "KEY_RESPONSE": 1,
     "KEY_STATUS": 2,
-    "KEY_COMMAND": 3
+    "KEY_COMMAND": 3,
+    "KEY_TIMER_SET": 4,
+    "KEY_TIMER_LABEL": 5,
+    "KEY_STOPWATCH_START": 6
   },
   "resources": {
     "media": []
