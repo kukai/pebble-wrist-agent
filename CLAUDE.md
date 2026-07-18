@@ -46,8 +46,7 @@ pebble logs                       # ログ確認
 ## スクリーン遷移
 
 ```
-HOME ──(SELECT)──▶ [音声録音] ──(認識成功)──▶ CONFIRM
-HOME ◀──(BACK)──── CONFIRM ──(SELECT)──────▶ LOADING ──▶ ANSWER
+HOME ──(SELECT)──▶ [音声録音] ──(認識成功)──▶ LOADING ──▶ ANSWER
 ANSWER ──(SELECT / BACK)──▶ HOME
 HOME: UP長押し(700ms) → 会話リセット送信
 ANSWER: UP/DOWN短押し → スクロール±30px
@@ -69,13 +68,21 @@ ANSWER: UP/DOWN長押し(500ms) → 履歴前後移動
 3. `HARDCODED_API_KEY` 変数（開発テスト用、デフォルト空文字）が優先
 4. キー未設定時は `error:no_api_key` をウォッチに送信
 
+**注意**: PebbleKit JS の localStorage はアプリ UUID ごとに分離される。
+`appinfo.json` の UUID を変更すると保存済みキーは参照できなくなり、
+設定 UI からの再入力が必要（ADR-012 参照）。
+
 ## OpenAI 連携
 
 - モデル: `gpt-4o-mini`
 - `max_tokens`: 200
 - タイムアウト: 15,000 ms
 - リトライ: NACK 時に 500 ms 後 1 回のみ再送
-- system プロンプト: `"You are a helpful assistant on a smartwatch. Answer concisely."`
+- system プロンプト: `"You are a helpful assistant on a smartwatch. Answer concisely."`（毎リクエスト、相対日付解決用に今日の日付を付加）
+- ツール (function calling): `get_weather(location?, date?)` — Open-Meteo（ジオコーディング + 予報、API キー不要）
+  - 場所未指定時は `navigator.geolocation` の現在地を使用（appinfo の `capabilities` に `location` が必須）
+  - ツール実行 → 再問い合わせは最大 2 ラウンド（超過で `error:tool_loop`）
+  - tool 往復メッセージは会話履歴に永続化しない（トリムで assistant/tool ペアが壊れるのを防ぐ。ADR-013 参照）
 
 ## GitHub 運用ルール
 

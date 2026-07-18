@@ -346,14 +346,14 @@ static void window_load(Window *window) {
   // ── Home ──────────────────────────────────────────────────────────────────
   s_home_title_layer = make_title_bar(root, bounds, "WristAgent");
 
-  s_home_hint_layer = text_layer_create(GRect(0, 40, bounds.size.w, 60));
-  text_layer_set_font(s_home_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
+  s_home_hint_layer = text_layer_create(GRect(0, content_top + 28, bounds.size.w, 72));
+  text_layer_set_font(s_home_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD));
   text_layer_set_text_alignment(s_home_hint_layer, GTextAlignmentCenter);
   text_layer_set_text(s_home_hint_layer, "Selectで質問");
   layer_add_child(root, text_layer_get_layer(s_home_hint_layer));
 
-  s_home_history_layer = text_layer_create(GRect(0, 110, bounds.size.w, 30));
-  text_layer_set_font(s_home_history_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
+  s_home_history_layer = text_layer_create(GRect(0, content_top + 104, bounds.size.w, 32));
+  text_layer_set_font(s_home_history_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
   text_layer_set_text_alignment(s_home_history_layer, GTextAlignmentCenter);
   text_layer_set_text(s_home_history_layer, "[履歴: 0件]");
   layer_add_child(root, text_layer_get_layer(s_home_history_layer));

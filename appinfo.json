@@ -11,7 +11,8 @@
   },
   "enableMultiJS": true,
   "capabilities": [
-    "configurable"
+    "configurable",
+    "location"
   ],
   "appKeys": {
     "KEY_QUERY": 0,
