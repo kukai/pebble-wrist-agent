@@ -24,6 +24,12 @@
     "KEY_STOPWATCH_START": 6
   },
   "resources": {
-    "media": []
+    "media": [
+      {
+        "type": "bitmap",
+        "name": "ICON_WEATHER",
+        "file": "images/icon_weather.png"
+      }
+    ]
   }
 }

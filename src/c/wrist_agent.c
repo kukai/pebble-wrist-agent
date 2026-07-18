@@ -28,7 +28,9 @@ typedef struct { char q[HIST_Q_SIZE]; char a[HIST_A_SIZE]; } HistEntry;
 // ---------------------------------------------------------------------------
 // Timer / stopwatch slots (persisted)
 // ---------------------------------------------------------------------------
-#define SLOT_COUNT            4
+// タイマー・SW とも同時に保持できるのは 1 件まで（ADR-022）。スロット自体は
+// 種別ごとに 1 つずつ、計 2 件で足りる。
+#define SLOT_COUNT            2
 #define SLOT_LABEL_SIZE       24
 #define PERSIST_KEY_SLOT_BASE 100
 #define TIMER_MIN_SECONDS     30   // Wakeup API rejects reservations < 30 s
@@ -70,10 +72,11 @@ static Slot s_slots[SLOT_COUNT];
 // ---------------------------------------------------------------------------
 // Home menu (単一セクション・固定行リスト)
 // ---------------------------------------------------------------------------
-// 「話す」「タイマー」「ストップウォッチ」「会話履歴」「天気」はすべて同列の
+// 「話す」「天気」「タイマー」「ストップウォッチ」「会話履歴」はすべて同列の
 // 固定行として並ぶ。タイマー/SW は動的にインスタンスの数だけ行が増えることは
-// せず、常に1行のまま存在し、サブタイトルで状態（残り/経過時間、複数アクティブ
-// なら "+N件"）を表現する（ADR-021 参照）。
+// せず、常に1行のまま存在し、サブタイトルで状態（未設定/残り・経過時間）を
+// 表現する（ADR-021 参照）。同時に保持できるのはタイマー・SW とも 1 件まで
+// （ADR-022）。
 typedef void (*MenuRowCallback)(void);
 typedef const char *(*MenuRowSubtitleFn)(void);  // NULL を返せばサブタイトルなし
 
@@ -81,6 +84,7 @@ typedef struct {
   const char *title;
   MenuRowCallback callback;
   MenuRowSubtitleFn subtitle;
+  GBitmap **icon;  // NULL = アイコンなし。実行時に読み込んだ GBitmap* へのポインタ
 } MenuRow;
 
 static void menu_row_talk(void);
@@ -93,19 +97,21 @@ static const char *timer_row_subtitle(void);
 static const char *stopwatch_row_subtitle(void);
 static const char *no_subtitle(void);
 
+static GBitmap *s_icon_weather;
+
 // 将来の項目追加は配列への追記だけで済む。
 static const MenuRow s_home_rows[] = {
-  { "\xe8\xa9\xb1\xe3\x81\x99", menu_row_talk, talk_subtitle },
+  { "\xe8\xa9\xb1\xe3\x81\x99", menu_row_talk, talk_subtitle, NULL },
   // UTF-8: "話す"
-  { "\xe3\x82\xbf\xe3\x82\xa4\xe3\x83\x9e\xe3\x83\xbc", menu_item_timer, timer_row_subtitle },
+  { "\xe5\xa4\xa9\xe6\xb0\x97", menu_item_weather, no_subtitle, &s_icon_weather },
+  // UTF-8: "天気"
+  { "\xe3\x82\xbf\xe3\x82\xa4\xe3\x83\x9e\xe3\x83\xbc", menu_item_timer, timer_row_subtitle, NULL },
   // UTF-8: "タイマー"
   { "\xe3\x82\xb9\xe3\x83\x88\xe3\x83\x83\xe3\x83\x97\xe3\x82\xa6\xe3\x82\xa9\xe3\x83\x83\xe3\x83\x81",
-    menu_item_stopwatch, stopwatch_row_subtitle },
+    menu_item_stopwatch, stopwatch_row_subtitle, NULL },
   // UTF-8: "ストップウォッチ"
-  { "\xe4\xbc\x9a\xe8\xa9\xb1\xe5\xb1\xa5\xe6\xad\xb4", menu_item_history, no_subtitle },
+  { "\xe4\xbc\x9a\xe8\xa9\xb1\xe5\xb1\xa5\xe6\xad\xb4", menu_item_history, no_subtitle, NULL },
   // UTF-8: "会話履歴"
-  { "\xe5\xa4\xa9\xe6\xb0\x97", menu_item_weather, no_subtitle },
-  // UTF-8: "天気"
 };
 
 // ---------------------------------------------------------------------------
@@ -140,13 +146,12 @@ static TextLayer   *s_answer_hint_layer;
 // ActionMenu
 static ActionMenuLevel *s_am_root;
 static int              s_am_slot = -1;
-static bool              s_open_timer_picker_pending = false;
-static bool              s_open_new_sw_pending = false;
-static int               s_open_slot_pending = -1;  // did_close 後に開くスロット番号
+static int              s_open_slot_pending = -1;  // did_close 後に開くスロット番号
 
-// HOME click config: menu_layer_set_click_config_onto_window() owns UP/DOWN/
-// SELECT; we chain onto its provider once and add an explicit BACK handler
-// (see home_click_config_provider) instead of relying on default fallback.
+// HOME click config: menu_layer_set_click_config_onto_window() owns SELECT;
+// we chain onto its provider once and add an explicit BACK handler (see
+// home_click_config_provider) instead of relying on default fallback, and
+// override UP/DOWN with cyclic-scroll versions (home_up_click/home_down_click).
 static ClickConfigProvider s_home_menu_ccp;
 
 // ---------------------------------------------------------------------------
@@ -417,12 +422,13 @@ static void menu_draw_row(GContext *ctx, const Layer *cell_layer,
                           MenuIndex *index, void *data) {
   if (index->row >= ARRAY_LENGTH(s_home_rows)) return;
   const MenuRow *row = &s_home_rows[index->row];
-  menu_cell_basic_draw(ctx, cell_layer, row->title, row->subtitle(), NULL);
+  GBitmap *icon = row->icon ? *row->icon : NULL;
+  menu_cell_basic_draw(ctx, cell_layer, row->title, row->subtitle(), icon);
 }
 
 // ---------------------------------------------------------------------------
-// 行サブタイトル（タイマー/SW は最初に見つかったアクティブなインスタンスの
-// 状態を表示し、複数ある場合は "+N件" を付記する。行自体は増減しない）
+// 行サブタイトル（タイマー/SW は 1 件までなので、あればその状態、なければ
+// "未設定" を表示するだけでよい。行自体は増減しない）
 // ---------------------------------------------------------------------------
 static const char *no_subtitle(void) { return NULL; }
 
@@ -433,18 +439,14 @@ static const char *talk_subtitle(void) {
 
 static const char *slot_kind_row_subtitle(SlotKind kind) {
   static char buf[48];
-  int count = 0;
-  int first_idx = -1;
+  int idx = -1;
   for (int i = 0; i < SLOT_COUNT; i++) {
-    if (s_slots[i].kind == kind) {
-      if (first_idx < 0) first_idx = i;
-      count++;
-    }
+    if (s_slots[i].kind == kind) { idx = i; break; }
   }
-  if (first_idx < 0) {
+  if (idx < 0) {
     return "\xe6\x9c\xaa\xe8\xa8\xad\xe5\xae\x9a";  // UTF-8: "未設定"
   }
-  Slot *s = &s_slots[first_idx];
+  Slot *s = &s_slots[idx];
   char tbuf[12];
   format_hms(tbuf, sizeof(tbuf), slot_display_seconds(s));
   const char *paused = "(\xe5\x81\x9c\xe6\xad\xa2)";  // UTF-8: "(停止)"
@@ -459,13 +461,8 @@ static const char *slot_kind_row_subtitle(SlotKind kind) {
   } else {
     snprintf(state, sizeof(state), "%s %s", tbuf, paused);
   }
-  if (s->label[0] && count > 1) {
-    snprintf(buf, sizeof(buf), "%s %s +%d\xe4\xbb\xb6", s->label, state, count - 1);
-  } else if (s->label[0]) {
+  if (s->label[0]) {
     snprintf(buf, sizeof(buf), "%s %s", s->label, state);
-  } else if (count > 1) {
-    snprintf(buf, sizeof(buf), "%s +%d\xe4\xbb\xb6", state, count - 1);
-    // UTF-8: "+N件"
   } else {
     snprintf(buf, sizeof(buf), "%s", state);
   }
@@ -481,26 +478,17 @@ static const char *stopwatch_row_subtitle(void) {
 }
 
 // ---------------------------------------------------------------------------
-// ActionMenu (section-2 row operations, all local — no LLM round-trip)
+// ActionMenu (タイマー/SW 行操作, all local — no LLM round-trip)
 // ---------------------------------------------------------------------------
 static void am_did_close(ActionMenu *menu, const ActionMenuItem *item, void *context) {
   if (s_am_root) {
     action_menu_hierarchy_destroy(s_am_root, NULL, NULL);
     s_am_root = NULL;
   }
-  // 「新しいタイマー/SW」が選ばれていた場合や、タイマー設定画面でプリセットが
-  // 選ばれた場合、この ActionMenu が完全に閉じてから次の画面を開く
-  // （開いたままの二重起動を避けるため did_close まで遅延する）。
-  // 新規作成後は S2 に行が増えるだけで終わらせず、作成したスロットの
-  // ActionMenu をそのまま開いて操作メニュー自体を更新する。
-  if (s_open_timer_picker_pending) {
-    s_open_timer_picker_pending = false;
-    open_timer_duration_picker();
-  } else if (s_open_new_sw_pending) {
-    s_open_new_sw_pending = false;
-    int idx = handle_stopwatch_start(NULL, false);
-    if (idx >= 0) open_slot_action_menu(idx);
-  } else if (s_open_slot_pending >= 0) {
+  // タイマー設定画面でプリセットが選ばれた場合、そのピッカー自身の ActionMenu
+  // が完全に閉じてから作成したスロットの ActionMenu を開く（開いたままの
+  // 二重起動を避けるため did_close まで遅延する）。
+  if (s_open_slot_pending >= 0) {
     int idx = s_open_slot_pending;
     s_open_slot_pending = -1;
     open_slot_action_menu(idx);
@@ -586,23 +574,14 @@ static void am_sw_reset(ActionMenu *am, const ActionMenuItem *item, void *ctx) {
   refresh_home_menu();
 }
 
-static void am_new_timer(ActionMenu *am, const ActionMenuItem *item, void *ctx) {
-  s_open_timer_picker_pending = true;
-}
-
-static void am_new_stopwatch(ActionMenu *am, const ActionMenuItem *item, void *ctx) {
-  s_open_new_sw_pending = true;
-}
-
-// タイマー/SW 実行中の最大アクション数（SW実行中: Stop+Lap+Reset+削除+新規 = 5）に合わせた容量
-#define ACTION_MENU_CAPACITY 5
+// タイマー/SW 実行中の最大アクション数（SW実行中: Stop+Lap+Reset+削除 = 4）に合わせた容量
+#define ACTION_MENU_CAPACITY 4
 
 static void open_slot_action_menu(int slot_idx) {
   Slot *s = &s_slots[slot_idx];
   if (s->kind == SLOT_EMPTY) return;
   s_am_slot = slot_idx;
   s_am_root = action_menu_level_create(ACTION_MENU_CAPACITY);
-  bool has_free_slot = find_free_slot() >= 0;
 
   if (s->kind == SLOT_TIMER) {
     action_menu_level_add_action(s_am_root,
@@ -615,11 +594,6 @@ static void open_slot_action_menu(int slot_idx) {
     action_menu_level_add_action(s_am_root,
       "\xe5\x89\x8a\xe9\x99\xa4",                                       // "削除"
       am_delete, NULL);
-    if (has_free_slot) {
-      action_menu_level_add_action(s_am_root,
-        "\xe6\x96\xb0\xe3\x81\x97\xe3\x81\x84\xe3\x82\xbf\xe3\x82\xa4\xe3\x83\x9e\xe3\x83\xbc",
-        am_new_timer, NULL);  // UTF-8: "新しいタイマー"
-    }
   } else {
     action_menu_level_add_action(s_am_root,
       s->running ? "\xe3\x82\xb9\xe3\x83\x88\xe3\x83\x83\xe3\x83\x97"   // "ストップ"
@@ -634,12 +608,6 @@ static void open_slot_action_menu(int slot_idx) {
     action_menu_level_add_action(s_am_root,
       "\xe5\x89\x8a\xe9\x99\xa4",                                       // "削除"
       am_delete, NULL);
-    if (has_free_slot) {
-      action_menu_level_add_action(s_am_root,
-        "\xe6\x96\xb0\xe3\x81\x97\xe3\x81\x84\xe3\x82\xb9\xe3\x83\x88\xe3\x83\x83\xe3\x83"
-        "\x97\xe3\x82\xa6\xe3\x82\xa9\xe3\x83\x83\xe3\x83\x81",
-        am_new_stopwatch, NULL);  // UTF-8: "新しいストップウォッチ"
-    }
   }
 
   ActionMenuConfig config = (ActionMenuConfig) {
@@ -651,8 +619,8 @@ static void open_slot_action_menu(int slot_idx) {
 }
 
 // ---------------------------------------------------------------------------
-// Timer duration picker (S3「タイマー」から未設定時に自動遷移、または
-// ActionMenu の「新しいタイマー」から遷移。プリセット時間を ActionMenu で選ばせる)
+// Timer duration picker (HOME「タイマー」行から未設定時に自動遷移。
+// プリセット時間を ActionMenu で選ばせる)
 // ---------------------------------------------------------------------------
 typedef struct { const char *label; int32_t seconds; } TimerPreset;
 
@@ -715,7 +683,7 @@ static void menu_item_history(void) {
 }
 
 // 未設定ならタイマー設定画面(プリセット選択)へ、設定済みなら既存の ActionMenu
-// (一時停止/リセット/削除 + 新しいタイマー) を開く。複数ある場合は最初の1件を対象とする。
+// (一時停止/リセット/削除) を開く。タイマーは同時に1件までしか保持できない。
 static void menu_item_timer(void) {
   for (int i = 0; i < SLOT_COUNT; i++) {
     if (s_slots[i].kind == SLOT_TIMER) {
@@ -848,11 +816,27 @@ static void home_back_click(ClickRecognizerRef r, void *ctx) {
   window_stack_remove(s_window, true);
 }
 
+// UP/DOWN は循環スクロールにする（最後の行で DOWN → 先頭へ、先頭の行で UP → 末尾へ）。
+// MenuLayer の既定の UP/DOWN（末尾/先頭で止まる）を上書きする。
+static void home_up_click(ClickRecognizerRef r, void *ctx) {
+  MenuIndex idx = menu_layer_get_selected_index(s_home_menu_layer);
+  idx.row = (idx.row == 0) ? (uint16_t)(ARRAY_LENGTH(s_home_rows) - 1) : idx.row - 1;
+  menu_layer_set_selected_index(s_home_menu_layer, idx, MenuRowAlignNone, true);
+}
+
+static void home_down_click(ClickRecognizerRef r, void *ctx) {
+  MenuIndex idx = menu_layer_get_selected_index(s_home_menu_layer);
+  idx.row = ((size_t)idx.row + 1 >= ARRAY_LENGTH(s_home_rows)) ? 0 : idx.row + 1;
+  menu_layer_set_selected_index(s_home_menu_layer, idx, MenuRowAlignNone, true);
+}
+
 static void home_click_config_provider(void *context) {
   if (s_home_menu_ccp) {
     s_home_menu_ccp(context);
   }
   window_single_click_subscribe(BUTTON_ID_BACK, home_back_click);
+  window_single_click_subscribe(BUTTON_ID_UP, home_up_click);
+  window_single_click_subscribe(BUTTON_ID_DOWN, home_down_click);
 }
 
 // ---------------------------------------------------------------------------
@@ -928,8 +912,18 @@ static void send_reset_command(void) {
 // ---------------------------------------------------------------------------
 // AppMessage receive
 // ---------------------------------------------------------------------------
+// 同時に保持できるタイマーは 1 件まで（ADR-022）。音声経由（LLM の
+// set_timer 関数呼び出し）でも同じ制限を適用するため、この関数自身でガードする。
 // 成功時は作成したスロット番号、失敗時は -1 を返す
 static int handle_timer_set(int32_t seconds, const char *label, bool set_pending_home) {
+  for (int i = 0; i < SLOT_COUNT; i++) {
+    if (s_slots[i].kind == SLOT_TIMER) {
+      set_home_status("\xe3\x82\xbf\xe3\x82\xa4\xe3\x83\x9e\xe3\x83\xbc\xe3\x81\xaf"
+                      "1\xe3\x81\xa4\xe3\x81\xbe\xe3\x81\xa7\xe3\x81\xa7\xe3\x81\x99");
+      // UTF-8: "タイマーは1つまでです"
+      return -1;
+    }
+  }
   int idx = find_free_slot();
   if (idx < 0) {
     set_home_status("\xe3\x82\xbf\xe3\x82\xa4\xe3\x83\x9e\xe3\x83\xbc\xe6\x9e\xa0"
@@ -958,8 +952,19 @@ static int handle_timer_set(int32_t seconds, const char *label, bool set_pending
   return -1;
 }
 
+// 同時に保持できる SW は 1 件まで（ADR-022）。音声経由（LLM の
+// start_stopwatch 関数呼び出し）でも同じ制限を適用するため、この関数自身でガードする。
 // 成功時は作成したスロット番号、失敗時は -1 を返す
 static int handle_stopwatch_start(const char *label, bool set_pending_home) {
+  for (int i = 0; i < SLOT_COUNT; i++) {
+    if (s_slots[i].kind == SLOT_STOPWATCH) {
+      set_home_status("\xe3\x82\xb9\xe3\x83\x88\xe3\x83\x83\xe3\x83\x97\xe3\x82\xa6"
+                      "\xe3\x82\xa9\xe3\x83\x83\xe3\x83\x81\xe3\x81\xaf"
+                      "1\xe3\x81\xa4\xe3\x81\xbe\xe3\x81\xa7\xe3\x81\xa7\xe3\x81\x99");
+      // UTF-8: "ストップウォッチは1つまでです"
+      return -1;
+    }
+  }
   int idx = find_free_slot();
   if (idx < 0) {
     set_home_status("\xe3\x82\xbf\xe3\x82\xa4\xe3\x83\x9e\xe3\x83\xbc\xe6\x9e\xa0"
@@ -1093,6 +1098,8 @@ static void window_load(Window *window) {
 
   window_set_background_color(window, GColorWhite);
 
+  s_icon_weather = gbitmap_create_with_resource(RESOURCE_ID_ICON_WEATHER);
+
   // ── Home (MenuLayer dashboard) ────────────────────────────────────────────
   s_home_title_layer = make_title_bar(root, bounds, "WristAgent");
 
@@ -1145,6 +1152,9 @@ static void window_load(Window *window) {
 }
 
 static void window_unload(Window *window) {
+  gbitmap_destroy(s_icon_weather);
+  s_icon_weather = NULL;
+
   text_layer_destroy(s_home_title_layer);
   menu_layer_destroy(s_home_menu_layer);
   s_home_menu_layer = NULL;
