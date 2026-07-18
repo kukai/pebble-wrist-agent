@@ -821,13 +821,15 @@ static void home_back_click(ClickRecognizerRef r, void *ctx) {
 static void home_up_click(ClickRecognizerRef r, void *ctx) {
   MenuIndex idx = menu_layer_get_selected_index(s_home_menu_layer);
   idx.row = (idx.row == 0) ? (uint16_t)(ARRAY_LENGTH(s_home_rows) - 1) : idx.row - 1;
-  menu_layer_set_selected_index(s_home_menu_layer, idx, MenuRowAlignNone, true);
+  // MenuRowAlignNone だと選択行が切り替わってもビューポートがスクロールせず、
+  // どの行が選ばれているか画面上わからなくなるため Center を指定する。
+  menu_layer_set_selected_index(s_home_menu_layer, idx, MenuRowAlignCenter, true);
 }
 
 static void home_down_click(ClickRecognizerRef r, void *ctx) {
   MenuIndex idx = menu_layer_get_selected_index(s_home_menu_layer);
   idx.row = ((size_t)idx.row + 1 >= ARRAY_LENGTH(s_home_rows)) ? 0 : idx.row + 1;
-  menu_layer_set_selected_index(s_home_menu_layer, idx, MenuRowAlignNone, true);
+  menu_layer_set_selected_index(s_home_menu_layer, idx, MenuRowAlignCenter, true);
 }
 
 static void home_click_config_provider(void *context) {
