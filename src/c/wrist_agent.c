@@ -68,31 +68,43 @@ typedef struct {
 static Slot s_slots[SLOT_COUNT];
 
 // ---------------------------------------------------------------------------
-// Home menu sections
+// Home menu (単一セクション・固定行リスト)
 // ---------------------------------------------------------------------------
-#define SECTION_TALK   0
-#define SECTION_ACTIVE 1
-#define SECTION_MENU   2
-#define NUM_SECTIONS   3
+// 「話す」「タイマー」「ストップウォッチ」「会話履歴」「天気」はすべて同列の
+// 固定行として並ぶ。タイマー/SW は動的にインスタンスの数だけ行が増えることは
+// せず、常に1行のまま存在し、サブタイトルで状態（残り/経過時間、複数アクティブ
+// なら "+N件"）を表現する（ADR-021 参照）。
+typedef void (*MenuRowCallback)(void);
+typedef const char *(*MenuRowSubtitleFn)(void);  // NULL を返せばサブタイトルなし
 
-typedef void (*FixedMenuCallback)(void);
-typedef struct { const char *title; FixedMenuCallback callback; } FixedMenuItem;
+typedef struct {
+  const char *title;
+  MenuRowCallback callback;
+  MenuRowSubtitleFn subtitle;
+} MenuRow;
 
-static void menu_item_history(void);
+static void menu_row_talk(void);
 static void menu_item_timer(void);
 static void menu_item_stopwatch(void);
+static void menu_item_history(void);
 static void menu_item_weather(void);
+static const char *talk_subtitle(void);
+static const char *timer_row_subtitle(void);
+static const char *stopwatch_row_subtitle(void);
+static const char *no_subtitle(void);
 
-// セクション3の固定項目。将来は配列に追記するだけで行が増える。
-static const FixedMenuItem s_fixed_items[] = {
-  { "\xe4\xbc\x9a\xe8\xa9\xb1\xe5\xb1\xa5\xe6\xad\xb4", menu_item_history },
-  // UTF-8: "会話履歴"
-  { "\xe3\x82\xbf\xe3\x82\xa4\xe3\x83\x9e\xe3\x83\xbc", menu_item_timer },
+// 将来の項目追加は配列への追記だけで済む。
+static const MenuRow s_home_rows[] = {
+  { "\xe8\xa9\xb1\xe3\x81\x99", menu_row_talk, talk_subtitle },
+  // UTF-8: "話す"
+  { "\xe3\x82\xbf\xe3\x82\xa4\xe3\x83\x9e\xe3\x83\xbc", menu_item_timer, timer_row_subtitle },
   // UTF-8: "タイマー"
   { "\xe3\x82\xb9\xe3\x83\x88\xe3\x83\x83\xe3\x83\x97\xe3\x82\xa6\xe3\x82\xa9\xe3\x83\x83\xe3\x83\x81",
-    menu_item_stopwatch },
+    menu_item_stopwatch, stopwatch_row_subtitle },
   // UTF-8: "ストップウォッチ"
-  { "\xe5\xa4\xa9\xe6\xb0\x97", menu_item_weather },
+  { "\xe4\xbc\x9a\xe8\xa9\xb1\xe5\xb1\xa5\xe6\xad\xb4", menu_item_history, no_subtitle },
+  // UTF-8: "会話履歴"
+  { "\xe5\xa4\xa9\xe6\xb0\x97", menu_item_weather, no_subtitle },
   // UTF-8: "天気"
 };
 
@@ -175,22 +187,6 @@ static void persist_history(void);
 // ---------------------------------------------------------------------------
 // Slot helpers
 // ---------------------------------------------------------------------------
-static int active_slot_count(void) {
-  int n = 0;
-  for (int i = 0; i < SLOT_COUNT; i++) {
-    if (s_slots[i].kind != SLOT_EMPTY) n++;
-  }
-  return n;
-}
-
-// n 番目 (0-origin) のアクティブスロットの実インデックスを返す
-static int active_slot_index(int n) {
-  for (int i = 0; i < SLOT_COUNT; i++) {
-    if (s_slots[i].kind != SLOT_EMPTY && n-- == 0) return i;
-  }
-  return -1;
-}
-
 static int find_free_slot(void) {
   for (int i = 0; i < SLOT_COUNT; i++) {
     if (s_slots[i].kind == SLOT_EMPTY) return i;
@@ -410,66 +406,78 @@ static void refresh_home_menu(void) {
 }
 
 static uint16_t menu_get_num_sections(MenuLayer *menu, void *ctx) {
-  return NUM_SECTIONS;
+  return 1;
 }
 
 static uint16_t menu_get_num_rows(MenuLayer *menu, uint16_t section, void *ctx) {
-  switch (section) {
-    case SECTION_TALK:   return 1;
-    case SECTION_ACTIVE: return (uint16_t)active_slot_count();
-    case SECTION_MENU:   return (uint16_t)ARRAY_LENGTH(s_fixed_items);
-    default:             return 0;
-  }
+  return (uint16_t)ARRAY_LENGTH(s_home_rows);
 }
 
 static void menu_draw_row(GContext *ctx, const Layer *cell_layer,
                           MenuIndex *index, void *data) {
-  switch (index->section) {
-    case SECTION_TALK:
-      menu_cell_basic_draw(ctx, cell_layer,
-        "\xe8\xa9\xb1\xe3\x81\x99",  // UTF-8: "話す"
-        "Select\xe3\x81\xa7\xe9\x9f\xb3\xe5\xa3\xb0\xe5\x85\xa5\xe5\x8a\x9b",
-        // UTF-8: "Selectで音声入力"
-        NULL);
-      break;
+  if (index->row >= ARRAY_LENGTH(s_home_rows)) return;
+  const MenuRow *row = &s_home_rows[index->row];
+  menu_cell_basic_draw(ctx, cell_layer, row->title, row->subtitle(), NULL);
+}
 
-    case SECTION_ACTIVE: {
-      int idx = active_slot_index(index->row);
-      if (idx < 0) break;
-      Slot *s = &s_slots[idx];
-      char tbuf[12];
-      char sub[48];
-      format_hms(tbuf, sizeof(tbuf), slot_display_seconds(s));
-      const char *paused = "(\xe5\x81\x9c\xe6\xad\xa2)";  // UTF-8: "(停止)"
-      if (s->kind == SLOT_STOPWATCH && s->last_lap > 0) {
-        char lbuf[12];
-        format_hms(lbuf, sizeof(lbuf), s->last_lap);
-        snprintf(sub, sizeof(sub), "%s%s%s Lap %s",
-                 tbuf, s->running ? "" : " ", s->running ? "" : paused, lbuf);
-      } else if (s->running) {
-        snprintf(sub, sizeof(sub), "%s", tbuf);
-      } else {
-        snprintf(sub, sizeof(sub), "%s %s", tbuf, paused);
-      }
-      const char *title;
-      if (s->label[0]) {
-        title = s->label;
-      } else if (s->kind == SLOT_TIMER) {
-        title = "\xe3\x82\xbf\xe3\x82\xa4\xe3\x83\x9e\xe3\x83\xbc";  // "タイマー"
-      } else {
-        title = "\xe3\x82\xb9\xe3\x83\x88\xe3\x83\x83\xe3\x83\x97"
-                "\xe3\x82\xa6\xe3\x82\xa9\xe3\x83\x83\xe3\x83\x81";  // "ストップウォッチ"
-      }
-      menu_cell_basic_draw(ctx, cell_layer, title, sub, NULL);
-      break;
+// ---------------------------------------------------------------------------
+// 行サブタイトル（タイマー/SW は最初に見つかったアクティブなインスタンスの
+// 状態を表示し、複数ある場合は "+N件" を付記する。行自体は増減しない）
+// ---------------------------------------------------------------------------
+static const char *no_subtitle(void) { return NULL; }
+
+static const char *talk_subtitle(void) {
+  return "Select\xe3\x81\xa7\xe9\x9f\xb3\xe5\xa3\xb0\xe5\x85\xa5\xe5\x8a\x9b";
+  // UTF-8: "Selectで音声入力"
+}
+
+static const char *slot_kind_row_subtitle(SlotKind kind) {
+  static char buf[48];
+  int count = 0;
+  int first_idx = -1;
+  for (int i = 0; i < SLOT_COUNT; i++) {
+    if (s_slots[i].kind == kind) {
+      if (first_idx < 0) first_idx = i;
+      count++;
     }
-
-    case SECTION_MENU:
-      if (index->row < ARRAY_LENGTH(s_fixed_items)) {
-        menu_cell_basic_draw(ctx, cell_layer, s_fixed_items[index->row].title, NULL, NULL);
-      }
-      break;
   }
+  if (first_idx < 0) {
+    return "\xe6\x9c\xaa\xe8\xa8\xad\xe5\xae\x9a";  // UTF-8: "未設定"
+  }
+  Slot *s = &s_slots[first_idx];
+  char tbuf[12];
+  format_hms(tbuf, sizeof(tbuf), slot_display_seconds(s));
+  const char *paused = "(\xe5\x81\x9c\xe6\xad\xa2)";  // UTF-8: "(停止)"
+  char state[32];
+  if (kind == SLOT_STOPWATCH && s->last_lap > 0) {
+    char lbuf[12];
+    format_hms(lbuf, sizeof(lbuf), s->last_lap);
+    snprintf(state, sizeof(state), "%s%s%s Lap %s",
+             tbuf, s->running ? "" : " ", s->running ? "" : paused, lbuf);
+  } else if (s->running) {
+    snprintf(state, sizeof(state), "%s", tbuf);
+  } else {
+    snprintf(state, sizeof(state), "%s %s", tbuf, paused);
+  }
+  if (s->label[0] && count > 1) {
+    snprintf(buf, sizeof(buf), "%s %s +%d\xe4\xbb\xb6", s->label, state, count - 1);
+  } else if (s->label[0]) {
+    snprintf(buf, sizeof(buf), "%s %s", s->label, state);
+  } else if (count > 1) {
+    snprintf(buf, sizeof(buf), "%s +%d\xe4\xbb\xb6", state, count - 1);
+    // UTF-8: "+N件"
+  } else {
+    snprintf(buf, sizeof(buf), "%s", state);
+  }
+  return buf;
+}
+
+static const char *timer_row_subtitle(void) {
+  return slot_kind_row_subtitle(SLOT_TIMER);
+}
+
+static const char *stopwatch_row_subtitle(void) {
+  return slot_kind_row_subtitle(SLOT_STOPWATCH);
 }
 
 // ---------------------------------------------------------------------------
@@ -686,8 +694,17 @@ static void open_timer_duration_picker(void) {
 }
 
 // ---------------------------------------------------------------------------
-// Menu select / fixed items
+// Menu row callbacks
 // ---------------------------------------------------------------------------
+static void menu_row_talk(void) {
+  if (s_dictation_session) {
+    dictation_session_start(s_dictation_session);
+  } else {
+    set_home_status("\xe3\x83\x9e\xe3\x82\xa4\xe3\x82\xaf\xe9\x9d\x9e\xe5\xaf\xbe\xe5\xbf\x9c");
+    // UTF-8: "マイク非対応"
+  }
+}
+
 static void menu_item_history(void) {
   if (s_hist_len > 0) {
     s_hist_view = s_hist_len - 1;
@@ -732,26 +749,8 @@ static void menu_item_weather(void) {
 }
 
 static void menu_select_callback(MenuLayer *menu, MenuIndex *index, void *ctx) {
-  switch (index->section) {
-    case SECTION_TALK:
-      if (s_dictation_session) {
-        dictation_session_start(s_dictation_session);
-      } else {
-        set_home_status("\xe3\x83\x9e\xe3\x82\xa4\xe3\x82\xaf\xe9\x9d\x9e\xe5\xaf\xbe\xe5\xbf\x9c");
-        // UTF-8: "マイク非対応"
-      }
-      break;
-    case SECTION_ACTIVE: {
-      int idx = active_slot_index(index->row);
-      if (idx >= 0) open_slot_action_menu(idx);
-      break;
-    }
-    case SECTION_MENU:
-      if (index->row < ARRAY_LENGTH(s_fixed_items)) {
-        s_fixed_items[index->row].callback();
-      }
-      break;
-  }
+  if (index->row >= ARRAY_LENGTH(s_home_rows)) return;
+  s_home_rows[index->row].callback();
 }
 
 // ---------------------------------------------------------------------------
@@ -877,7 +876,7 @@ static void show_screen(Screen screen) {
       menu_layer_reload_data(s_home_menu_layer);
       // 常に「話す」を初期選択にし、Select 即発話の起動感を維持する
       menu_layer_set_selected_index(s_home_menu_layer,
-                                    MenuIndex(SECTION_TALK, 0),
+                                    MenuIndex(0, 0),
                                     MenuRowAlignTop, false);
       window_set_click_config_provider_with_context(
         s_window, home_click_config_provider, s_home_menu_layer);
