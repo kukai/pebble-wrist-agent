@@ -87,6 +87,8 @@ ANSWER: UP/DOWN長押し(500ms) → 履歴前後移動
 ## GitHub 運用ルール
 
 - PR の本文（description）は **日本語** で記述する。タイトルは英語。
+- **main にマージする前に必ず `staging` ブランチ経由で CloudPebble ビルドを確認する**。
+  手順は `.claude/skills/pre-merge-staging/SKILL.md` を参照（skill 名: `pre-merge-staging`）。
 
 ## ドキュメント運用
 
