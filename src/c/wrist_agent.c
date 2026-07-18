@@ -35,6 +35,17 @@ typedef struct { char q[HIST_Q_SIZE]; char a[HIST_A_SIZE]; } HistEntry;
 #define WAKEUP_RETRY_MAX      8
 #define WAKEUP_RETRY_SHIFT_S  5    // shift on exclusion-window collision
 
+// ---------------------------------------------------------------------------
+// Conversation history persistence
+// ---------------------------------------------------------------------------
+// PersistentStorage caps a single key at 256 bytes, so HIST_A_SIZE (512) must
+// be split across two keys per entry.
+#define PERSIST_KEY_HIST_META    200
+#define PERSIST_KEY_HIST_Q_BASE  210  // +i, i in [0, HIST_CAP)
+#define PERSIST_KEY_HIST_A0_BASE 220  // +i, first 256 bytes of a
+#define PERSIST_KEY_HIST_A1_BASE 230  // +i, remaining bytes of a
+#define HIST_A_CHUNK 256
+
 typedef enum {
   SLOT_EMPTY     = 0,
   SLOT_TIMER     = 1,
@@ -68,11 +79,18 @@ typedef void (*FixedMenuCallback)(void);
 typedef struct { const char *title; FixedMenuCallback callback; } FixedMenuItem;
 
 static void menu_item_history(void);
+static void menu_item_timer(void);
+static void menu_item_stopwatch(void);
 
 // セクション3の固定項目。将来は配列に追記するだけで行が増える。
 static const FixedMenuItem s_fixed_items[] = {
   { "\xe4\xbc\x9a\xe8\xa9\xb1\xe5\xb1\xa5\xe6\xad\xb4", menu_item_history },
   // UTF-8: "会話履歴"
+  { "\xe3\x82\xbf\xe3\x82\xa4\xe3\x83\x9e\xe3\x83\xbc", menu_item_timer },
+  // UTF-8: "タイマー"
+  { "\xe3\x82\xb9\xe3\x83\x88\xe3\x83\x83\xe3\x83\x97\xe3\x82\xa6\xe3\x82\xa9\xe3\x83\x83\xe3\x83\x81",
+    menu_item_stopwatch },
+  // UTF-8: "ストップウォッチ"
 };
 
 // ---------------------------------------------------------------------------
@@ -107,6 +125,13 @@ static TextLayer   *s_answer_hint_layer;
 // ActionMenu
 static ActionMenuLevel *s_am_root;
 static int              s_am_slot = -1;
+static bool              s_open_timer_picker_pending = false;
+static bool              s_open_new_sw_pending = false;
+
+// HOME click config: menu_layer_set_click_config_onto_window() owns UP/DOWN/
+// SELECT; we chain onto its provider once and add an explicit BACK handler
+// (see home_click_config_provider) instead of relying on default fallback.
+static ClickConfigProvider s_home_menu_ccp;
 
 // ---------------------------------------------------------------------------
 // State
@@ -136,6 +161,11 @@ static void send_reset_command(void);
 static void refresh_answer_screen(void);
 static void refresh_home_menu(void);
 static void set_home_status(const char *text);
+static void open_timer_duration_picker(void);
+static void handle_timer_set(int32_t seconds, const char *label, bool set_pending_home);
+static void handle_stopwatch_start(const char *label, bool set_pending_home);
+static void clear_history(void);
+static void persist_history(void);
 
 // ---------------------------------------------------------------------------
 // Slot helpers
@@ -279,6 +309,56 @@ static void sanitize_slots(void) {
 // ---------------------------------------------------------------------------
 // History management
 // ---------------------------------------------------------------------------
+// 会話履歴はユーザーがリセットするまで永続化する（ADR-005 の HIST_CAP=5 方針を踏襲）。
+// 1 キー最大 256 bytes の制約があるため、a (512 bytes) は 2 キーに分割する。
+static void persist_history(void) {
+  persist_write_int(PERSIST_KEY_HIST_META, s_hist_len);
+  for (int i = 0; i < HIST_CAP; i++) {
+    if (i < s_hist_len) {
+      persist_write_data(PERSIST_KEY_HIST_Q_BASE + i, s_hist[i].q, sizeof(s_hist[i].q));
+      persist_write_data(PERSIST_KEY_HIST_A0_BASE + i, s_hist[i].a, HIST_A_CHUNK);
+      persist_write_data(PERSIST_KEY_HIST_A1_BASE + i, s_hist[i].a + HIST_A_CHUNK,
+                         HIST_A_SIZE - HIST_A_CHUNK);
+    } else {
+      persist_delete(PERSIST_KEY_HIST_Q_BASE + i);
+      persist_delete(PERSIST_KEY_HIST_A0_BASE + i);
+      persist_delete(PERSIST_KEY_HIST_A1_BASE + i);
+    }
+  }
+}
+
+static void history_load(void) {
+  s_hist_len = 0;
+  if (persist_exists(PERSIST_KEY_HIST_META)) {
+    int32_t len = persist_read_int(PERSIST_KEY_HIST_META);
+    if (len < 0) len = 0;
+    if (len > HIST_CAP) len = HIST_CAP;
+    s_hist_len = len;
+  }
+  for (int i = 0; i < s_hist_len; i++) {
+    memset(&s_hist[i], 0, sizeof(HistEntry));
+    if (persist_exists(PERSIST_KEY_HIST_Q_BASE + i)) {
+      persist_read_data(PERSIST_KEY_HIST_Q_BASE + i, s_hist[i].q, sizeof(s_hist[i].q));
+      s_hist[i].q[HIST_Q_SIZE - 1] = '\0';
+    }
+    if (persist_exists(PERSIST_KEY_HIST_A0_BASE + i)) {
+      persist_read_data(PERSIST_KEY_HIST_A0_BASE + i, s_hist[i].a, HIST_A_CHUNK);
+    }
+    if (persist_exists(PERSIST_KEY_HIST_A1_BASE + i)) {
+      persist_read_data(PERSIST_KEY_HIST_A1_BASE + i, s_hist[i].a + HIST_A_CHUNK,
+                        HIST_A_SIZE - HIST_A_CHUNK);
+    }
+    s_hist[i].a[HIST_A_SIZE - 1] = '\0';
+  }
+  s_hist_view = s_hist_len > 0 ? s_hist_len - 1 : 0;
+}
+
+static void clear_history(void) {
+  s_hist_len  = 0;
+  s_hist_view = 0;
+  persist_history();
+}
+
 static void push_history(const char *q, const char *a) {
   if (s_hist_len == HIST_CAP) {
     memmove(s_hist, s_hist + 1, sizeof(HistEntry) * (HIST_CAP - 1));
@@ -290,6 +370,7 @@ static void push_history(const char *q, const char *a) {
   s_hist[s_hist_len].a[HIST_A_SIZE - 1] = '\0';
   s_hist_len++;
   s_hist_view = s_hist_len - 1;
+  persist_history();
 }
 
 static void refresh_answer_screen(void) {
@@ -394,6 +475,15 @@ static void am_did_close(ActionMenu *menu, const ActionMenuItem *item, void *con
     action_menu_hierarchy_destroy(s_am_root, NULL, NULL);
     s_am_root = NULL;
   }
+  // 「新しいタイマー/SW」が選ばれていた場合、この ActionMenu が完全に閉じてから
+  // 次の ActionMenu を開く（開いたままの二重起動を避けるため did_close まで遅延する）
+  if (s_open_timer_picker_pending) {
+    s_open_timer_picker_pending = false;
+    open_timer_duration_picker();
+  } else if (s_open_new_sw_pending) {
+    s_open_new_sw_pending = false;
+    handle_stopwatch_start(NULL, false);
+  }
 }
 
 static void am_timer_toggle(ActionMenu *am, const ActionMenuItem *item, void *ctx) {
@@ -475,11 +565,23 @@ static void am_sw_reset(ActionMenu *am, const ActionMenuItem *item, void *ctx) {
   refresh_home_menu();
 }
 
+static void am_new_timer(ActionMenu *am, const ActionMenuItem *item, void *ctx) {
+  s_open_timer_picker_pending = true;
+}
+
+static void am_new_stopwatch(ActionMenu *am, const ActionMenuItem *item, void *ctx) {
+  s_open_new_sw_pending = true;
+}
+
+// タイマー/SW 実行中の最大アクション数（SW実行中: Stop+Lap+Reset+削除+新規 = 5）に合わせた容量
+#define ACTION_MENU_CAPACITY 5
+
 static void open_slot_action_menu(int slot_idx) {
   Slot *s = &s_slots[slot_idx];
   if (s->kind == SLOT_EMPTY) return;
   s_am_slot = slot_idx;
-  s_am_root = action_menu_level_create(4);
+  s_am_root = action_menu_level_create(ACTION_MENU_CAPACITY);
+  bool has_free_slot = find_free_slot() >= 0;
 
   if (s->kind == SLOT_TIMER) {
     action_menu_level_add_action(s_am_root,
@@ -492,6 +594,11 @@ static void open_slot_action_menu(int slot_idx) {
     action_menu_level_add_action(s_am_root,
       "\xe5\x89\x8a\xe9\x99\xa4",                                       // "削除"
       am_delete, NULL);
+    if (has_free_slot) {
+      action_menu_level_add_action(s_am_root,
+        "\xe6\x96\xb0\xe3\x81\x97\xe3\x81\x84\xe3\x82\xbf\xe3\x82\xa4\xe3\x83\x9e\xe3\x83\xbc",
+        am_new_timer, NULL);  // UTF-8: "新しいタイマー"
+    }
   } else {
     action_menu_level_add_action(s_am_root,
       s->running ? "\xe3\x82\xb9\xe3\x83\x88\xe3\x83\x83\xe3\x83\x97"   // "ストップ"
@@ -506,8 +613,55 @@ static void open_slot_action_menu(int slot_idx) {
     action_menu_level_add_action(s_am_root,
       "\xe5\x89\x8a\xe9\x99\xa4",                                       // "削除"
       am_delete, NULL);
+    if (has_free_slot) {
+      action_menu_level_add_action(s_am_root,
+        "\xe6\x96\xb0\xe3\x81\x97\xe3\x81\x84\xe3\x82\xb9\xe3\x83\x88\xe3\x83\x83\xe3\x83"
+        "\x97\xe3\x82\xa6\xe3\x82\xa9\xe3\x83\x83\xe3\x83\x81",
+        am_new_stopwatch, NULL);  // UTF-8: "新しいストップウォッチ"
+    }
   }
 
+  ActionMenuConfig config = (ActionMenuConfig) {
+    .root_level = s_am_root,
+    .colors = { .background = GColorWhite, .foreground = GColorBlack },
+    .did_close = am_did_close,
+  };
+  action_menu_open(&config);
+}
+
+// ---------------------------------------------------------------------------
+// Timer duration picker (S3「タイマー」から未設定時に自動遷移、または
+// ActionMenu の「新しいタイマー」から遷移。プリセット時間を ActionMenu で選ばせる)
+// ---------------------------------------------------------------------------
+typedef struct { const char *label; int32_t seconds; } TimerPreset;
+
+static const TimerPreset s_timer_presets[] = {
+  { "1\xe5\x88\x86",  60 },
+  { "3\xe5\x88\x86",  180 },
+  { "5\xe5\x88\x86",  300 },
+  { "10\xe5\x88\x86", 600 },
+  { "15\xe5\x88\x86", 900 },
+  { "20\xe5\x88\x86", 1200 },
+  { "30\xe5\x88\x86", 1800 },
+  // UTF-8: "分"
+};
+
+static void tp_action(ActionMenu *am, const ActionMenuItem *item, void *ctx) {
+  int32_t seconds = (int32_t)(intptr_t)action_menu_item_get_action_data(item);
+  handle_timer_set(seconds, NULL, false);
+}
+
+static void open_timer_duration_picker(void) {
+  if (find_free_slot() < 0) {
+    set_home_status("\xe3\x82\xbf\xe3\x82\xa4\xe3\x83\x9e\xe3\x83\xbc\xe6\x9e\xa0"
+                    "\xe6\xba\x80\xe6\x9d\xaf");  // UTF-8: "タイマー枠満杯"
+    return;
+  }
+  s_am_root = action_menu_level_create(ARRAY_LENGTH(s_timer_presets));
+  for (size_t i = 0; i < ARRAY_LENGTH(s_timer_presets); i++) {
+    action_menu_level_add_action(s_am_root, s_timer_presets[i].label, tp_action,
+                                 (void *)(intptr_t)s_timer_presets[i].seconds);
+  }
   ActionMenuConfig config = (ActionMenuConfig) {
     .root_level = s_am_root,
     .colors = { .background = GColorWhite, .foreground = GColorBlack },
@@ -526,6 +680,29 @@ static void menu_item_history(void) {
   } else {
     set_home_status("\xe5\xb1\xa5\xe6\xad\xb4\xe3\x81\xaa\xe3\x81\x97");  // "履歴なし"
   }
+}
+
+// 未設定ならタイマー設定画面(プリセット選択)へ、設定済みなら既存の ActionMenu
+// (一時停止/リセット/削除 + 新しいタイマー) を開く。複数ある場合は最初の1件を対象とする。
+static void menu_item_timer(void) {
+  for (int i = 0; i < SLOT_COUNT; i++) {
+    if (s_slots[i].kind == SLOT_TIMER) {
+      open_slot_action_menu(i);
+      return;
+    }
+  }
+  open_timer_duration_picker();
+}
+
+// 未設定なら即座にストップウォッチを開始、設定済みなら既存の ActionMenu を開く
+static void menu_item_stopwatch(void) {
+  for (int i = 0; i < SLOT_COUNT; i++) {
+    if (s_slots[i].kind == SLOT_STOPWATCH) {
+      open_slot_action_menu(i);
+      return;
+    }
+  }
+  handle_stopwatch_start(NULL, false);
 }
 
 static void menu_select_callback(MenuLayer *menu, MenuIndex *index, void *ctx) {
@@ -627,7 +804,31 @@ static void answer_click_config(void *ctx) {
   window_long_click_subscribe(BUTTON_ID_DOWN, 500, answer_down_long_click, NULL);
 }
 
-static void loading_click_config(void *ctx) {}
+// LOADING 中は「操作無効」の仕様どおり BACK も含めて何も起きないようにする。
+// 何もサブスクライブしないと BACK はデフォルトの「ウィンドウを閉じる」動作にフォール
+// バックしてしまい、リクエスト中にアプリが終了できてしまうため明示的に無効化する。
+static void noop_click(ClickRecognizerRef r, void *ctx) {}
+
+static void loading_click_config(void *ctx) {
+  window_single_click_subscribe(BUTTON_ID_BACK, noop_click);
+}
+
+// HOME: menu_layer_set_click_config_onto_window() が上書きする Click Config
+// Provider に対し、BACK ボタンだけ明示的にサブスクライブし直す。BACK は本来
+// 何もバインドしなければデフォルトで「ウィンドウを閉じる」動作にフォールバック
+// するはずだが、音声認識サイクルを繰り返した後に反応しなくなる不具合が実機で
+// 報告されたため、暗黙のデフォルト挙動に頼らず明示的なハンドラを持たせる
+// （MenuLayer + カスタム BACK の定石パターン。参考: Pebble SDK issue の回避策）。
+static void home_back_click(ClickRecognizerRef r, void *ctx) {
+  window_stack_remove(s_window, true);
+}
+
+static void home_click_config_provider(void *context) {
+  if (s_home_menu_ccp) {
+    s_home_menu_ccp(context);
+  }
+  window_single_click_subscribe(BUTTON_ID_BACK, home_back_click);
+}
 
 // ---------------------------------------------------------------------------
 // show_screen
@@ -652,7 +853,8 @@ static void show_screen(Screen screen) {
       menu_layer_set_selected_index(s_home_menu_layer,
                                     MenuIndex(SECTION_TALK, 0),
                                     MenuRowAlignTop, false);
-      menu_layer_set_click_config_onto_window(s_home_menu_layer, s_window);
+      window_set_click_config_provider_with_context(
+        s_window, home_click_config_provider, s_home_menu_layer);
       break;
 
     case SCREEN_LOADING:
@@ -694,15 +896,14 @@ static void send_reset_command(void) {
   if (app_message_outbox_begin(&out) != APP_MSG_OK) return;
   dict_write_cstring(out, KEY_COMMAND, "reset");
   app_message_outbox_send();
-  s_hist_len  = 0;
-  s_hist_view = 0;
+  clear_history();
   set_home_status("リセット中...");
 }
 
 // ---------------------------------------------------------------------------
 // AppMessage receive
 // ---------------------------------------------------------------------------
-static void handle_timer_set(int32_t seconds, const char *label) {
+static void handle_timer_set(int32_t seconds, const char *label, bool set_pending_home) {
   int idx = find_free_slot();
   if (idx < 0) {
     set_home_status("\xe3\x82\xbf\xe3\x82\xa4\xe3\x83\x9e\xe3\x83\xbc\xe6\x9e\xa0"
@@ -722,7 +923,7 @@ static void handle_timer_set(int32_t seconds, const char *label) {
   if (schedule_timer_wakeup(idx, seconds)) {
     s->running = 1;
     persist_slot(idx);
-    s_pending_home = true;
+    if (set_pending_home) s_pending_home = true;
     refresh_home_menu();
   } else {
     clear_slot(idx);
@@ -730,7 +931,7 @@ static void handle_timer_set(int32_t seconds, const char *label) {
   }
 }
 
-static void handle_stopwatch_start(const char *label) {
+static void handle_stopwatch_start(const char *label, bool set_pending_home) {
   int idx = find_free_slot();
   if (idx < 0) {
     set_home_status("\xe3\x82\xbf\xe3\x82\xa4\xe3\x83\x9e\xe3\x83\xbc\xe6\x9e\xa0"
@@ -749,7 +950,7 @@ static void handle_stopwatch_start(const char *label) {
     trim_utf8_tail(s->label);
   }
   persist_slot(idx);
-  s_pending_home = true;
+  if (set_pending_home) s_pending_home = true;
   refresh_home_menu();
 }
 
@@ -766,11 +967,11 @@ static void inbox_received_handler(DictionaryIterator *iter, void *ctx) {
   }
 
   if (timer_tuple) {
-    handle_timer_set(timer_tuple->value->int32, label);
+    handle_timer_set(timer_tuple->value->int32, label, true);
   }
 
   if (sw_tuple) {
-    handle_stopwatch_start(label);
+    handle_stopwatch_start(label, true);
   }
 
   if (resp_tuple) {
@@ -796,8 +997,7 @@ static void inbox_received_handler(DictionaryIterator *iter, void *ctx) {
       set_home_status(s_status_buf);
       show_screen(SCREEN_HOME);
     } else if (strcmp(status, "reset_ok") == 0) {
-      s_hist_len  = 0;
-      s_hist_view = 0;
+      clear_history();
       set_home_status("\xe3\x83\xaa\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88\xe5\xae\x8c\xe4\xba\x86");
       // UTF-8: "リセット完了"
       show_screen(SCREEN_HOME);
@@ -876,6 +1076,11 @@ static void window_load(Window *window) {
   });
   layer_add_child(root, menu_layer_get_layer(s_home_menu_layer));
 
+  // MenuLayer 自身の Click Config Provider を一度だけ取得し、以後は
+  // home_click_config_provider でラップして使う（BACK ハンドラを補強するため）。
+  menu_layer_set_click_config_onto_window(s_home_menu_layer, s_window);
+  s_home_menu_ccp = window_get_click_config_provider(s_window);
+
   s_home_status_layer = make_bottom_hint(root, bounds, "");
 
   // ── Loading ───────────────────────────────────────────────────────────────
@@ -931,6 +1136,7 @@ static void window_unload(Window *window) {
 // ---------------------------------------------------------------------------
 static void init(void) {
   slots_load();
+  history_load();
 
   app_message_register_inbox_received(inbox_received_handler);
   app_message_register_outbox_failed(outbox_failed_handler);
