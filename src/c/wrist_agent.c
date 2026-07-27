@@ -117,10 +117,17 @@ static const MenuRow s_home_rows[] = {
 // ---------------------------------------------------------------------------
 // Screen states
 // ---------------------------------------------------------------------------
+// 「会話履歴」（ANSWER）に続き、「天気」「タイマー/ストップウォッチ」
+// （SLOT）「タイマー設定」もそれぞれ専用のフルスクリーンビューを持つ。
+// いずれも Pebble Window は増やさず、単一の s_window 内でレイヤーの
+// 表示/非表示と Click Config Provider を切り替えるだけの既存方式を踏襲する。
 typedef enum {
   SCREEN_HOME,
   SCREEN_LOADING,
-  SCREEN_ANSWER
+  SCREEN_ANSWER,
+  SCREEN_WEATHER,
+  SCREEN_SLOT,
+  SCREEN_TIMER_SET,
 } Screen;
 
 // ---------------------------------------------------------------------------
@@ -137,16 +144,28 @@ static TextLayer   *s_home_status_layer;
 static TextLayer   *s_loading_title_layer;
 static TextLayer   *s_loading_msg_layer;
 
-// Answer
+// Answer / Weather (会話履歴と天気は同じスクロール可能テキスト表示を共有する)
 static TextLayer   *s_answer_title_layer;
 static ScrollLayer *s_answer_scroll_layer;
 static TextLayer   *s_answer_text_layer;
 static TextLayer   *s_answer_hint_layer;
 
-// ActionMenu
-static ActionMenuLevel *s_am_root;
-static int              s_am_slot = -1;
-static int              s_open_slot_pending = -1;  // did_close 後に開くスロット番号
+// Slot view (タイマー/ストップウォッチ共通の操作ビュー)
+static TextLayer   *s_slot_title_layer;
+static TextLayer   *s_slot_time_layer;
+static TextLayer   *s_slot_sub_layer;
+static TextLayer   *s_slot_hint_layer;
+static int          s_open_slot = -1;  // SCREEN_SLOT が表示中のスロット番号
+
+// Timer set picker (分秒ピッカー)
+static TextLayer   *s_tset_title_layer;
+static TextLayer   *s_tset_min_layer;
+static TextLayer   *s_tset_colon_layer;
+static TextLayer   *s_tset_sec_layer;
+static TextLayer   *s_tset_hint_layer;
+static int          s_ts_minutes = 5;
+static int          s_ts_seconds = 0;
+static int          s_ts_field   = 0;  // 0 = 分選択中, 1 = 秒選択中
 
 // HOME click config: menu_layer_set_click_config_onto_window() owns SELECT;
 // we chain onto its provider once and add an explicit BACK handler (see
@@ -168,10 +187,12 @@ static HistEntry s_hist[HIST_CAP];
 static int       s_hist_len  = 0;
 static int       s_hist_view = 0;
 static char      s_answer_display[HIST_Q_SIZE + HIST_A_SIZE + 8];
-static char      s_answer_title_text[12];
+static char      s_answer_title_text[16];
 
 // 音声経由でタイマー/SWをセットした直後の応答は ANSWER でなく HOME に戻す
 static bool      s_pending_home = false;
+// 「天気」経由の応答は ANSWER でなく SCREEN_WEATHER に表示する
+static bool      s_pending_weather = false;
 
 // ---------------------------------------------------------------------------
 // Forward declarations
@@ -180,10 +201,11 @@ static void show_screen(Screen screen);
 static void send_query(void);
 static void send_reset_command(void);
 static void refresh_answer_screen(void);
+static void refresh_weather_screen(void);
+static void refresh_slot_screen(void);
+static void refresh_timer_set_screen(void);
 static void refresh_home_menu(void);
 static void set_home_status(const char *text);
-static void open_timer_duration_picker(void);
-static void open_slot_action_menu(int slot_idx);
 static int handle_timer_set(int32_t seconds, const char *label, bool set_pending_home);
 static int handle_stopwatch_start(const char *label, bool set_pending_home);
 static void clear_history(void);
@@ -379,15 +401,18 @@ static void push_history(const char *q, const char *a) {
   persist_history();
 }
 
-static void refresh_answer_screen(void) {
-  if (s_hist_len == 0) return;
-  HistEntry *e = &s_hist[s_hist_view];
-  snprintf(s_answer_display, sizeof(s_answer_display),
-           "Q: %s\n\nA: %s", e->q, e->a);
-  snprintf(s_answer_title_text, sizeof(s_answer_title_text),
-           "%d/%d", s_hist_view + 1, s_hist_len);
-  text_layer_set_text(s_answer_title_layer, s_answer_title_text);
+// ---------------------------------------------------------------------------
+// Answer / Weather (共有のスクロール可能テキスト表示)
+// ---------------------------------------------------------------------------
+// 会話履歴 (ANSWER) と天気 (WEATHER) は同じレイヤー構成（タイトル+スクロール
+// 本文+下部ヒント）を使い回す。タイトル・本文・ヒントの中身だけ差し替える。
+static void set_answer_style_content(const char *title, const char *body, const char *hint) {
+  text_layer_set_text(s_answer_title_layer, title);
+  strncpy(s_answer_display, body, sizeof(s_answer_display) - 1);
+  s_answer_display[sizeof(s_answer_display) - 1] = '\0';
   text_layer_set_text(s_answer_text_layer, s_answer_display);
+  text_layer_set_text(s_answer_hint_layer, hint);
+
   GRect scroll_bounds = layer_get_bounds(scroll_layer_get_layer(s_answer_scroll_layer));
   GSize text_size = text_layer_get_content_size(s_answer_text_layer);
   text_size.h += 8;
@@ -395,6 +420,27 @@ static void refresh_answer_screen(void) {
   text_layer_set_size(s_answer_text_layer, GSize(scroll_bounds.size.w, text_size.h));
   scroll_layer_set_content_size(s_answer_scroll_layer, GSize(scroll_bounds.size.w, text_size.h));
   scroll_layer_set_content_offset(s_answer_scroll_layer, GPointZero, false);
+}
+
+static void refresh_answer_screen(void) {
+  if (s_hist_len == 0) return;
+  HistEntry *e = &s_hist[s_hist_view];
+  char body[HIST_Q_SIZE + HIST_A_SIZE + 8];
+  snprintf(body, sizeof(body), "Q: %s\n\nA: %s", e->q, e->a);
+  snprintf(s_answer_title_text, sizeof(s_answer_title_text),
+           "%d/%d", s_hist_view + 1, s_hist_len);
+  set_answer_style_content(s_answer_title_text, body,
+    "UP/DN\xe9\x95\xb7:\xe5\x89\x8d\xe5\xbe\x8c SEL\xe9\x95\xb7:\xe3\x83\xaa\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88");
+  // UTF-8: "UP/DN長:前後 SEL長:リセット"
+}
+
+static void refresh_weather_screen(void) {
+  char body[HIST_Q_SIZE + HIST_A_SIZE + 8];
+  snprintf(body, sizeof(body), "%s", s_response_buf);
+  set_answer_style_content(
+    "\xe5\xa4\xa9\xe6\xb0\x97",  // UTF-8: "天気"
+    body,
+    "BACK/SEL: \xe6\x88\xbb\xe3\x82\x8b");  // UTF-8: "BACK/SEL: 戻る"
 }
 
 // ---------------------------------------------------------------------------
@@ -478,187 +524,220 @@ static const char *stopwatch_row_subtitle(void) {
 }
 
 // ---------------------------------------------------------------------------
-// ActionMenu (タイマー/SW 行操作, all local — no LLM round-trip)
+// Slot actions (タイマー/SW 操作。SCREEN_SLOT のクリックハンドラから直接
+// 呼ばれる。all local — no LLM round-trip)
 // ---------------------------------------------------------------------------
-static void am_did_close(ActionMenu *menu, const ActionMenuItem *item, void *context) {
-  if (s_am_root) {
-    action_menu_hierarchy_destroy(s_am_root, NULL, NULL);
-    s_am_root = NULL;
-  }
-  // タイマー設定画面でプリセットが選ばれた場合、そのピッカー自身の ActionMenu
-  // が完全に閉じてから作成したスロットの ActionMenu を開く（開いたままの
-  // 二重起動を避けるため did_close まで遅延する）。
-  if (s_open_slot_pending >= 0) {
-    int idx = s_open_slot_pending;
-    s_open_slot_pending = -1;
-    open_slot_action_menu(idx);
-  }
-}
-
-static void am_timer_toggle(ActionMenu *am, const ActionMenuItem *item, void *ctx) {
-  Slot *s = &s_slots[s_am_slot];
-  if (s->kind != SLOT_TIMER) return;
-  if (s->running) {
-    wakeup_cancel(s->wakeup_id);
-    s->wakeup_id = -1;
-    int32_t rem = (int32_t)(s->target_ts - time(NULL));
-    s->remaining = rem < 1 ? 1 : rem;
-    s->running = 0;
-  } else {
-    if (schedule_timer_wakeup(s_am_slot, s->remaining)) {
-      s->running = 1;
+static void slot_toggle(int idx) {
+  Slot *s = &s_slots[idx];
+  if (s->kind == SLOT_TIMER) {
+    if (s->running) {
+      wakeup_cancel(s->wakeup_id);
+      s->wakeup_id = -1;
+      int32_t rem = (int32_t)(s->target_ts - time(NULL));
+      s->remaining = rem < 1 ? 1 : rem;
+      s->running = 0;
     } else {
-      set_home_status("\xe4\xba\x88\xe7\xb4\x84\xe5\xa4\xb1\xe6\x95\x97");  // "予約失敗"
+      if (schedule_timer_wakeup(idx, s->remaining)) {
+        s->running = 1;
+      } else {
+        set_home_status("\xe4\xba\x88\xe7\xb4\x84\xe5\xa4\xb1\xe6\x95\x97");  // "予約失敗"
+      }
+    }
+  } else if (s->kind == SLOT_STOPWATCH) {
+    time_t now = time(NULL);
+    if (s->running) {
+      s->elapsed = (int32_t)(now - s->start_ts);
+      s->running = 0;
+    } else {
+      s->start_ts = now - s->elapsed;
+      s->running  = 1;
     }
   }
-  persist_slot(s_am_slot);
+  persist_slot(idx);
   refresh_home_menu();
 }
 
-static void am_timer_reset(ActionMenu *am, const ActionMenuItem *item, void *ctx) {
-  Slot *s = &s_slots[s_am_slot];
-  if (s->kind != SLOT_TIMER) return;
-  if (s->running && s->wakeup_id >= 0) wakeup_cancel(s->wakeup_id);
-  s->wakeup_id = -1;
-  if (schedule_timer_wakeup(s_am_slot, s->duration)) {
-    s->running = 1;
-  } else {
-    s->running   = 0;
-    s->remaining = s->duration;
-    set_home_status("\xe4\xba\x88\xe7\xb4\x84\xe5\xa4\xb1\xe6\x95\x97");  // "予約失敗"
+static void slot_reset(int idx) {
+  Slot *s = &s_slots[idx];
+  if (s->kind == SLOT_TIMER) {
+    if (s->running && s->wakeup_id >= 0) wakeup_cancel(s->wakeup_id);
+    s->wakeup_id = -1;
+    if (schedule_timer_wakeup(idx, s->duration)) {
+      s->running = 1;
+    } else {
+      s->running   = 0;
+      s->remaining = s->duration;
+      set_home_status("\xe4\xba\x88\xe7\xb4\x84\xe5\xa4\xb1\xe6\x95\x97");  // "予約失敗"
+    }
+  } else if (s->kind == SLOT_STOPWATCH) {
+    s->running  = 0;
+    s->elapsed  = 0;
+    s->start_ts = 0;
+    s->last_lap = 0;
   }
-  persist_slot(s_am_slot);
+  persist_slot(idx);
   refresh_home_menu();
 }
 
-static void am_delete(ActionMenu *am, const ActionMenuItem *item, void *ctx) {
-  Slot *s = &s_slots[s_am_slot];
+static void slot_lap(int idx) {
+  Slot *s = &s_slots[idx];
+  if (s->kind != SLOT_STOPWATCH || !s->running) return;
+  s->last_lap = slot_display_seconds(s);
+  persist_slot(idx);
+  refresh_home_menu();
+}
+
+static void slot_delete(int idx) {
+  Slot *s = &s_slots[idx];
   if (s->kind == SLOT_TIMER && s->running && s->wakeup_id >= 0) {
     wakeup_cancel(s->wakeup_id);
   }
-  clear_slot(s_am_slot);
+  clear_slot(idx);
   refresh_home_menu();
 }
 
-static void am_sw_toggle(ActionMenu *am, const ActionMenuItem *item, void *ctx) {
-  Slot *s = &s_slots[s_am_slot];
-  if (s->kind != SLOT_STOPWATCH) return;
-  time_t now = time(NULL);
-  if (s->running) {
-    s->elapsed = (int32_t)(now - s->start_ts);
-    s->running = 0;
-  } else {
-    s->start_ts = now - s->elapsed;
-    s->running  = 1;
-  }
-  persist_slot(s_am_slot);
-  refresh_home_menu();
-}
-
-static void am_sw_lap(ActionMenu *am, const ActionMenuItem *item, void *ctx) {
-  Slot *s = &s_slots[s_am_slot];
-  if (s->kind != SLOT_STOPWATCH || !s->running) return;
-  s->last_lap = slot_display_seconds(s);
-  persist_slot(s_am_slot);
-  refresh_home_menu();
-}
-
-static void am_sw_reset(ActionMenu *am, const ActionMenuItem *item, void *ctx) {
-  Slot *s = &s_slots[s_am_slot];
-  if (s->kind != SLOT_STOPWATCH) return;
-  s->running  = 0;
-  s->elapsed  = 0;
-  s->start_ts = 0;
-  s->last_lap = 0;
-  persist_slot(s_am_slot);
-  refresh_home_menu();
-}
-
-// タイマー/SW 実行中の最大アクション数（SW実行中: Stop+Lap+Reset+削除 = 4）に合わせた容量
-#define ACTION_MENU_CAPACITY 4
-
-static void open_slot_action_menu(int slot_idx) {
-  Slot *s = &s_slots[slot_idx];
+// ---------------------------------------------------------------------------
+// SCREEN_SLOT (タイマー/ストップウォッチ専用ビュー)
+// ---------------------------------------------------------------------------
+static void refresh_slot_screen(void) {
+  if (s_open_slot < 0 || s_open_slot >= SLOT_COUNT) return;
+  Slot *s = &s_slots[s_open_slot];
   if (s->kind == SLOT_EMPTY) return;
-  s_am_slot = slot_idx;
-  s_am_root = action_menu_level_create(ACTION_MENU_CAPACITY);
 
-  if (s->kind == SLOT_TIMER) {
-    action_menu_level_add_action(s_am_root,
-      s->running ? "\xe4\xb8\x80\xe6\x99\x82\xe5\x81\x9c\xe6\xad\xa2"   // "一時停止"
-                 : "\xe5\x86\x8d\xe9\x96\x8b",                          // "再開"
-      am_timer_toggle, NULL);
-    action_menu_level_add_action(s_am_root,
-      "\xe3\x83\xaa\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88",               // "リセット"
-      am_timer_reset, NULL);
-    action_menu_level_add_action(s_am_root,
-      "\xe5\x89\x8a\xe9\x99\xa4",                                       // "削除"
-      am_delete, NULL);
-  } else {
-    action_menu_level_add_action(s_am_root,
-      s->running ? "\xe3\x82\xb9\xe3\x83\x88\xe3\x83\x83\xe3\x83\x97"   // "ストップ"
-                 : "\xe3\x82\xb9\xe3\x82\xbf\xe3\x83\xbc\xe3\x83\x88",  // "スタート"
-      am_sw_toggle, NULL);
+  bool is_timer = (s->kind == SLOT_TIMER);
+  text_layer_set_text(s_slot_title_layer,
+    is_timer ? "\xe3\x82\xbf\xe3\x82\xa4\xe3\x83\x9e\xe3\x83\xbc"           // "タイマー"
+             : "\xe3\x82\xb9\xe3\x83\x88\xe3\x83\x83\xe3\x83\x97\xe3\x82"
+               "\xa6\xe3\x82\xa9\xe3\x83\x83\xe3\x83\x81");                // "ストップウォッチ"
+
+  static char time_buf[16];
+  format_hms(time_buf, sizeof(time_buf), slot_display_seconds(s));
+  text_layer_set_text(s_slot_time_layer, time_buf);
+
+  static char sub_buf[64];
+  const char *paused = "\xe5\x81\x9c\xe6\xad\xa2\xe4\xb8\xad";  // "停止中"
+  const char *running_timer = "\xe6\xae\x8b\xe3\x82\x8a";        // "残り"
+  const char *running_sw    = "\xe8\xa8\x88\xe6\xb8\xac\xe4\xb8\xad";  // "計測中"
+  if (s->label[0]) {
     if (s->running) {
-      action_menu_level_add_action(s_am_root, "Lap", am_sw_lap, NULL);
+      snprintf(sub_buf, sizeof(sub_buf), "%s %s", s->label, is_timer ? running_timer : running_sw);
+    } else {
+      snprintf(sub_buf, sizeof(sub_buf), "%s %s", s->label, paused);
     }
-    action_menu_level_add_action(s_am_root,
-      "\xe3\x83\xaa\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88",               // "リセット"
-      am_sw_reset, NULL);
-    action_menu_level_add_action(s_am_root,
-      "\xe5\x89\x8a\xe9\x99\xa4",                                       // "削除"
-      am_delete, NULL);
+  } else {
+    snprintf(sub_buf, sizeof(sub_buf), "%s", s->running ? (is_timer ? running_timer : running_sw) : paused);
   }
+  if (!is_timer && s->last_lap > 0) {
+    char lbuf[12];
+    format_hms(lbuf, sizeof(lbuf), s->last_lap);
+    size_t len = strlen(sub_buf);
+    snprintf(sub_buf + len, sizeof(sub_buf) - len, " Lap %s", lbuf);
+  }
+  text_layer_set_text(s_slot_sub_layer, sub_buf);
 
-  ActionMenuConfig config = (ActionMenuConfig) {
-    .root_level = s_am_root,
-    .colors = { .background = GColorWhite, .foreground = GColorBlack },
-    .did_close = am_did_close,
-  };
-  action_menu_open(&config);
+  text_layer_set_text(s_slot_hint_layer, is_timer
+    ? "SEL:\xe4\xb8\x80\xe6\x99\x82\xe5\x81\x9c\xe6\xad\xa2/\xe5\x86\x8d\xe9\x96\x8b "
+      "\xe9\x95\xb7:\xe3\x83\xaa\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88"
+      // "SEL:一時停止/再開 長:リセット"
+    : "SEL:\xe9\x96\x8b\xe5\xa7\x8b/\xe5\x81\x9c\xe6\xad\xa2 UP:Lap "
+      "\xe9\x95\xb7:\xe3\x83\xaa\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88");
+      // "SEL:開始/停止 UP:Lap 長:リセット"
+}
+
+static void slot_select_click(ClickRecognizerRef r, void *ctx) {
+  slot_toggle(s_open_slot);
+  refresh_slot_screen();
+}
+
+static void slot_select_long_click(ClickRecognizerRef r, void *ctx) {
+  slot_reset(s_open_slot);
+  refresh_slot_screen();
+}
+
+static void slot_up_click(ClickRecognizerRef r, void *ctx) {
+  slot_lap(s_open_slot);
+  refresh_slot_screen();
+}
+
+static void slot_back_click(ClickRecognizerRef r, void *ctx) {
+  show_screen(SCREEN_HOME);
+}
+
+static void slot_back_long_click(ClickRecognizerRef r, void *ctx) {
+  slot_delete(s_open_slot);
+  show_screen(SCREEN_HOME);
+}
+
+static void slot_click_config(void *ctx) {
+  window_single_click_subscribe(BUTTON_ID_SELECT, slot_select_click);
+  window_long_click_subscribe(BUTTON_ID_SELECT, 700, slot_select_long_click, NULL);
+  window_single_click_subscribe(BUTTON_ID_UP, slot_up_click);
+  window_single_click_subscribe(BUTTON_ID_BACK, slot_back_click);
+  window_long_click_subscribe(BUTTON_ID_BACK, 700, slot_back_long_click, NULL);
 }
 
 // ---------------------------------------------------------------------------
-// Timer duration picker (HOME「タイマー」行から未設定時に自動遷移。
-// プリセット時間を ActionMenu で選ばせる)
+// SCREEN_TIMER_SET (タイマー設定, 分秒ピッカー)
 // ---------------------------------------------------------------------------
-typedef struct { const char *label; int32_t seconds; } TimerPreset;
+static void refresh_timer_set_screen(void) {
+  static char min_buf[4];
+  static char sec_buf[4];
+  snprintf(min_buf, sizeof(min_buf), "%02d", s_ts_minutes);
+  snprintf(sec_buf, sizeof(sec_buf), "%02d", s_ts_seconds);
+  text_layer_set_text(s_tset_min_layer, min_buf);
+  text_layer_set_text(s_tset_sec_layer, sec_buf);
 
-static const TimerPreset s_timer_presets[] = {
-  { "1\xe5\x88\x86",  60 },
-  { "3\xe5\x88\x86",  180 },
-  { "5\xe5\x88\x86",  300 },
-  { "10\xe5\x88\x86", 600 },
-  { "15\xe5\x88\x86", 900 },
-  { "20\xe5\x88\x86", 1200 },
-  { "30\xe5\x88\x86", 1800 },
-  // UTF-8: "分"
-};
+  bool min_selected = (s_ts_field == 0);
+  text_layer_set_background_color(s_tset_min_layer, min_selected ? GColorBlack : GColorWhite);
+  text_layer_set_text_color(s_tset_min_layer, min_selected ? GColorWhite : GColorBlack);
+  text_layer_set_background_color(s_tset_sec_layer, min_selected ? GColorWhite : GColorBlack);
+  text_layer_set_text_color(s_tset_sec_layer, min_selected ? GColorBlack : GColorWhite);
+}
 
-static void tp_action(ActionMenu *am, const ActionMenuItem *item, void *ctx) {
-  int32_t seconds = (int32_t)(intptr_t)action_menu_item_get_action_data(item);
+static void tset_up_click(ClickRecognizerRef r, void *ctx) {
+  if (s_ts_field == 0) {
+    s_ts_minutes = (s_ts_minutes + 1) % 181;
+  } else {
+    s_ts_seconds = (s_ts_seconds + 1) % 60;
+  }
+  refresh_timer_set_screen();
+}
+
+static void tset_down_click(ClickRecognizerRef r, void *ctx) {
+  if (s_ts_field == 0) {
+    s_ts_minutes = (s_ts_minutes + 180) % 181;
+  } else {
+    s_ts_seconds = (s_ts_seconds + 59) % 60;
+  }
+  refresh_timer_set_screen();
+}
+
+static void tset_select_click(ClickRecognizerRef r, void *ctx) {
+  s_ts_field = s_ts_field == 0 ? 1 : 0;
+  refresh_timer_set_screen();
+}
+
+static void tset_select_long_click(ClickRecognizerRef r, void *ctx) {
+  int32_t seconds = (int32_t)(s_ts_minutes * 60 + s_ts_seconds);
   int idx = handle_timer_set(seconds, NULL, false);
-  // このピッカー自身の did_close (am_did_close) が呼ばれてから開く
-  if (idx >= 0) s_open_slot_pending = idx;
+  if (idx >= 0) {
+    s_open_slot = idx;
+    show_screen(SCREEN_SLOT);
+  } else {
+    show_screen(SCREEN_HOME);
+  }
 }
 
-static void open_timer_duration_picker(void) {
-  if (find_free_slot() < 0) {
-    set_home_status("\xe3\x82\xbf\xe3\x82\xa4\xe3\x83\x9e\xe3\x83\xbc\xe6\x9e\xa0"
-                    "\xe6\xba\x80\xe6\x9d\xaf");  // UTF-8: "タイマー枠満杯"
-    return;
-  }
-  s_am_root = action_menu_level_create(ARRAY_LENGTH(s_timer_presets));
-  for (size_t i = 0; i < ARRAY_LENGTH(s_timer_presets); i++) {
-    action_menu_level_add_action(s_am_root, s_timer_presets[i].label, tp_action,
-                                 (void *)(intptr_t)s_timer_presets[i].seconds);
-  }
-  ActionMenuConfig config = (ActionMenuConfig) {
-    .root_level = s_am_root,
-    .colors = { .background = GColorWhite, .foreground = GColorBlack },
-    .did_close = am_did_close,
-  };
-  action_menu_open(&config);
+static void tset_back_click(ClickRecognizerRef r, void *ctx) {
+  show_screen(SCREEN_HOME);
+}
+
+static void tset_click_config(void *ctx) {
+  window_single_click_subscribe(BUTTON_ID_UP, tset_up_click);
+  window_single_click_subscribe(BUTTON_ID_DOWN, tset_down_click);
+  window_single_click_subscribe(BUTTON_ID_SELECT, tset_select_click);
+  window_long_click_subscribe(BUTTON_ID_SELECT, 700, tset_select_long_click, NULL);
+  window_single_click_subscribe(BUTTON_ID_BACK, tset_back_click);
 }
 
 // ---------------------------------------------------------------------------
@@ -682,37 +761,47 @@ static void menu_item_history(void) {
   }
 }
 
-// 未設定ならタイマー設定画面(プリセット選択)へ、設定済みなら既存の ActionMenu
-// (一時停止/リセット/削除) を開く。タイマーは同時に1件までしか保持できない。
+// 未設定ならタイマー設定画面(分秒ピッカー)へ、設定済みなら専用ビュー
+// (SCREEN_SLOT) を開く。タイマーは同時に1件までしか保持できない。
 static void menu_item_timer(void) {
   for (int i = 0; i < SLOT_COUNT; i++) {
     if (s_slots[i].kind == SLOT_TIMER) {
-      open_slot_action_menu(i);
+      s_open_slot = i;
+      show_screen(SCREEN_SLOT);
       return;
     }
   }
-  open_timer_duration_picker();
+  s_ts_minutes = 5;
+  s_ts_seconds = 0;
+  s_ts_field   = 0;
+  show_screen(SCREEN_TIMER_SET);
 }
 
-// 未設定なら即座にストップウォッチを開始、設定済みなら既存の ActionMenu を開く
+// 未設定なら即座にストップウォッチを開始、設定済みなら専用ビューを開く
 static void menu_item_stopwatch(void) {
   for (int i = 0; i < SLOT_COUNT; i++) {
     if (s_slots[i].kind == SLOT_STOPWATCH) {
-      open_slot_action_menu(i);
+      s_open_slot = i;
+      show_screen(SCREEN_SLOT);
       return;
     }
   }
   int idx = handle_stopwatch_start(NULL, false);
-  if (idx >= 0) open_slot_action_menu(idx);
+  if (idx >= 0) {
+    s_open_slot = idx;
+    show_screen(SCREEN_SLOT);
+  }
 }
 
 // 音声を使わず「今日の天気を教えて」を送信する。既存の get_weather ツール（JS 側）が
 // 応答するため、ここでは通常の音声質問と同じ send_query() の経路をそのまま再利用する。
+// 応答表示は ANSWER でなく専用の SCREEN_WEATHER に出す (s_pending_weather 参照)。
 static void menu_item_weather(void) {
   snprintf(s_query_buf, QUERY_BUF_SIZE, "%s",
     "\xe4\xbb\x8a\xe6\x97\xa5\xe3\x81\xae\xe5\xa4\xa9\xe6\xb0\x97\xe3\x82\x92"
     "\xe6\x95\x99\xe3\x81\x88\xe3\x81\xa6");
   // UTF-8: "今日の天気を教えて"
+  s_pending_weather = true;
   send_query();
 }
 
@@ -722,11 +811,14 @@ static void menu_select_callback(MenuLayer *menu, MenuIndex *index, void *ctx) {
 }
 
 // ---------------------------------------------------------------------------
-// TickTimerService (home foreground only; redraw recomputes from timestamps)
+// TickTimerService (home / slot-view foreground only; redraw recomputes from
+// timestamps)
 // ---------------------------------------------------------------------------
 static void tick_handler(struct tm *tick_time, TimeUnits units_changed) {
-  if (s_home_menu_layer) {
+  if (s_current_screen == SCREEN_HOME && s_home_menu_layer) {
     layer_mark_dirty(menu_layer_get_layer(s_home_menu_layer));
+  } else if (s_current_screen == SCREEN_SLOT) {
+    refresh_slot_screen();
   }
 }
 
@@ -742,10 +834,19 @@ static void hide_all_screens(void) {
   layer_set_hidden(text_layer_get_layer(s_answer_title_layer), true);
   layer_set_hidden(scroll_layer_get_layer(s_answer_scroll_layer), true);
   layer_set_hidden(text_layer_get_layer(s_answer_hint_layer), true);
+  layer_set_hidden(text_layer_get_layer(s_slot_title_layer), true);
+  layer_set_hidden(text_layer_get_layer(s_slot_time_layer), true);
+  layer_set_hidden(text_layer_get_layer(s_slot_sub_layer), true);
+  layer_set_hidden(text_layer_get_layer(s_slot_hint_layer), true);
+  layer_set_hidden(text_layer_get_layer(s_tset_title_layer), true);
+  layer_set_hidden(text_layer_get_layer(s_tset_min_layer), true);
+  layer_set_hidden(text_layer_get_layer(s_tset_colon_layer), true);
+  layer_set_hidden(text_layer_get_layer(s_tset_sec_layer), true);
+  layer_set_hidden(text_layer_get_layer(s_tset_hint_layer), true);
 }
 
 // ---------------------------------------------------------------------------
-// Click handlers (ANSWER / LOADING)
+// Click handlers (ANSWER / WEATHER / LOADING)
 // ---------------------------------------------------------------------------
 static void answer_select_click(ClickRecognizerRef r, void *ctx) {
   show_screen(SCREEN_HOME);
@@ -795,6 +896,14 @@ static void answer_click_config(void *ctx) {
   window_single_click_subscribe(BUTTON_ID_DOWN, answer_down_click);
   window_long_click_subscribe(BUTTON_ID_UP, 500, answer_up_long_click, NULL);
   window_long_click_subscribe(BUTTON_ID_DOWN, 500, answer_down_long_click, NULL);
+}
+
+// 天気は単発の応答表示のため、履歴前後移動・リセットの長押しはバインドしない
+static void weather_click_config(void *ctx) {
+  window_single_click_subscribe(BUTTON_ID_SELECT, answer_select_click);
+  window_single_click_subscribe(BUTTON_ID_BACK, answer_back_click);
+  window_single_click_subscribe(BUTTON_ID_UP, answer_up_click);
+  window_single_click_subscribe(BUTTON_ID_DOWN, answer_down_click);
 }
 
 // LOADING 中は「操作無効」の仕様どおり BACK も含めて何も起きないようにする。
@@ -848,7 +957,7 @@ static void show_screen(Screen screen) {
   s_current_screen = screen;
   hide_all_screens();
 
-  if (screen == SCREEN_HOME) {
+  if (screen == SCREEN_HOME || screen == SCREEN_SLOT) {
     tick_timer_service_subscribe(SECOND_UNIT, tick_handler);
   } else {
     tick_timer_service_unsubscribe();
@@ -881,6 +990,33 @@ static void show_screen(Screen screen) {
       layer_set_hidden(text_layer_get_layer(s_answer_hint_layer), false);
       window_set_click_config_provider(s_window, answer_click_config);
       break;
+
+    case SCREEN_WEATHER:
+      refresh_weather_screen();
+      layer_set_hidden(text_layer_get_layer(s_answer_title_layer), false);
+      layer_set_hidden(scroll_layer_get_layer(s_answer_scroll_layer), false);
+      layer_set_hidden(text_layer_get_layer(s_answer_hint_layer), false);
+      window_set_click_config_provider(s_window, weather_click_config);
+      break;
+
+    case SCREEN_SLOT:
+      refresh_slot_screen();
+      layer_set_hidden(text_layer_get_layer(s_slot_title_layer), false);
+      layer_set_hidden(text_layer_get_layer(s_slot_time_layer), false);
+      layer_set_hidden(text_layer_get_layer(s_slot_sub_layer), false);
+      layer_set_hidden(text_layer_get_layer(s_slot_hint_layer), false);
+      window_set_click_config_provider(s_window, slot_click_config);
+      break;
+
+    case SCREEN_TIMER_SET:
+      refresh_timer_set_screen();
+      layer_set_hidden(text_layer_get_layer(s_tset_title_layer), false);
+      layer_set_hidden(text_layer_get_layer(s_tset_min_layer), false);
+      layer_set_hidden(text_layer_get_layer(s_tset_colon_layer), false);
+      layer_set_hidden(text_layer_get_layer(s_tset_sec_layer), false);
+      layer_set_hidden(text_layer_get_layer(s_tset_hint_layer), false);
+      window_set_click_config_provider(s_window, tset_click_config);
+      break;
   }
 }
 
@@ -893,6 +1029,7 @@ static void send_query(void) {
   if (result != APP_MSG_OK) {
     snprintf(s_status_buf, sizeof(s_status_buf), "send err %d", (int)result);
     set_home_status(s_status_buf);
+    s_pending_weather = false;
     show_screen(SCREEN_HOME);
     return;
   }
@@ -1020,6 +1157,9 @@ static void inbox_received_handler(DictionaryIterator *iter, void *ctx) {
       set_home_status("\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88\xe5\xae\x8c\xe4\xba\x86");
       // UTF-8: "セット完了"
       show_screen(SCREEN_HOME);
+    } else if (s_pending_weather) {
+      s_pending_weather = false;
+      show_screen(SCREEN_WEATHER);
     } else {
       show_screen(SCREEN_ANSWER);
     }
@@ -1031,6 +1171,7 @@ static void inbox_received_handler(DictionaryIterator *iter, void *ctx) {
       strncpy(s_status_buf, status + 6, sizeof(s_status_buf) - 1);
       s_status_buf[sizeof(s_status_buf) - 1] = '\0';
       set_home_status(s_status_buf);
+      s_pending_weather = false;
       show_screen(SCREEN_HOME);
     } else if (strcmp(status, "reset_ok") == 0) {
       clear_history();
@@ -1047,6 +1188,7 @@ static void inbox_received_handler(DictionaryIterator *iter, void *ctx) {
 static void outbox_failed_handler(DictionaryIterator *iter, AppMessageResult reason, void *ctx) {
   snprintf(s_status_buf, sizeof(s_status_buf), "outbox err %d", (int)reason);
   set_home_status(s_status_buf);
+  s_pending_weather = false;
   show_screen(SCREEN_HOME);
 }
 
@@ -1131,7 +1273,7 @@ static void window_load(Window *window) {
   // UTF-8: "考え中..."
   layer_add_child(root, text_layer_get_layer(s_loading_msg_layer));
 
-  // ── Answer ────────────────────────────────────────────────────────────────
+  // ── Answer / Weather (共有レイヤー) ─────────────────────────────────────
   s_answer_title_layer = make_title_bar(root, bounds, "");
 
   GRect answer_scroll_frame = GRect(0, content_top, bounds.size.w, content_h);
@@ -1145,9 +1287,49 @@ static void window_load(Window *window) {
   scroll_layer_add_child(s_answer_scroll_layer, text_layer_get_layer(s_answer_text_layer));
   layer_add_child(root, scroll_layer_get_layer(s_answer_scroll_layer));
 
-  s_answer_hint_layer = make_bottom_hint(root, bounds,
-    "UP/DN\xe9\x95\xb7:\xe5\x89\x8d\xe5\xbe\x8c SEL\xe9\x95\xb7:\xe3\x83\xaa\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88");
-  // UTF-8: "UP/DN長:前後 SEL長:リセット"
+  s_answer_hint_layer = make_bottom_hint(root, bounds, "");
+
+  // ── Slot view (タイマー/ストップウォッチ) ───────────────────────────────
+  s_slot_title_layer = make_title_bar(root, bounds, "");
+
+  s_slot_time_layer = text_layer_create(GRect(0, content_top + 10, bounds.size.w, 50));
+  text_layer_set_font(s_slot_time_layer, fonts_get_system_font(FONT_KEY_BITHAM_42_BOLD));
+  text_layer_set_text_alignment(s_slot_time_layer, GTextAlignmentCenter);
+  layer_add_child(root, text_layer_get_layer(s_slot_time_layer));
+
+  s_slot_sub_layer = text_layer_create(GRect(0, content_top + 64, bounds.size.w, 30));
+  text_layer_set_font(s_slot_sub_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
+  text_layer_set_text_alignment(s_slot_sub_layer, GTextAlignmentCenter);
+  layer_add_child(root, text_layer_get_layer(s_slot_sub_layer));
+
+  s_slot_hint_layer = make_bottom_hint(root, bounds, "");
+
+  // ── Timer set picker (分秒ピッカー) ──────────────────────────────────────
+  s_tset_title_layer = make_title_bar(root, bounds,
+    "\xe3\x82\xbf\xe3\x82\xa4\xe3\x83\x9e\xe3\x83\xbc\xe8\xa8\xad\xe5\xae\x9a");
+  // UTF-8: "タイマー設定"
+
+  int tset_row_y = content_top + 30;
+  s_tset_min_layer = text_layer_create(GRect(0, tset_row_y, bounds.size.w / 2 - 10, 50));
+  text_layer_set_font(s_tset_min_layer, fonts_get_system_font(FONT_KEY_BITHAM_42_BOLD));
+  text_layer_set_text_alignment(s_tset_min_layer, GTextAlignmentRight);
+  layer_add_child(root, text_layer_get_layer(s_tset_min_layer));
+
+  s_tset_colon_layer = text_layer_create(GRect(bounds.size.w / 2 - 10, tset_row_y, 20, 50));
+  text_layer_set_font(s_tset_colon_layer, fonts_get_system_font(FONT_KEY_BITHAM_42_BOLD));
+  text_layer_set_text_alignment(s_tset_colon_layer, GTextAlignmentCenter);
+  text_layer_set_text(s_tset_colon_layer, ":");
+  layer_add_child(root, text_layer_get_layer(s_tset_colon_layer));
+
+  s_tset_sec_layer = text_layer_create(GRect(bounds.size.w / 2 + 10, tset_row_y, bounds.size.w / 2 - 10, 50));
+  text_layer_set_font(s_tset_sec_layer, fonts_get_system_font(FONT_KEY_BITHAM_42_BOLD));
+  text_layer_set_text_alignment(s_tset_sec_layer, GTextAlignmentLeft);
+  layer_add_child(root, text_layer_get_layer(s_tset_sec_layer));
+
+  s_tset_hint_layer = make_bottom_hint(root, bounds,
+    "UP/DN:\xe5\xa2\x97\xe6\xb8\x9b SEL:\xe5\x88\x87\xe6\x9b\xbf "
+    "SEL\xe9\x95\xb7:\xe6\xb1\xba\xe5\xae\x9a");
+  // UTF-8: "UP/DN:増減 SEL:切替 SEL長:決定"
 
   // ── Show initial screen ───────────────────────────────────────────────────
   show_screen(SCREEN_HOME);
@@ -1170,6 +1352,17 @@ static void window_unload(Window *window) {
   text_layer_destroy(s_answer_text_layer);
   scroll_layer_destroy(s_answer_scroll_layer);
   text_layer_destroy(s_answer_hint_layer);
+
+  text_layer_destroy(s_slot_title_layer);
+  text_layer_destroy(s_slot_time_layer);
+  text_layer_destroy(s_slot_sub_layer);
+  text_layer_destroy(s_slot_hint_layer);
+
+  text_layer_destroy(s_tset_title_layer);
+  text_layer_destroy(s_tset_min_layer);
+  text_layer_destroy(s_tset_colon_layer);
+  text_layer_destroy(s_tset_sec_layer);
+  text_layer_destroy(s_tset_hint_layer);
 }
 
 // ---------------------------------------------------------------------------
