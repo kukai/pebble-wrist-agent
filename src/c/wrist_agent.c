@@ -128,6 +128,7 @@ typedef enum {
   SCREEN_WEATHER,
   SCREEN_SLOT,
   SCREEN_TIMER_SET,
+  SCREEN_ALARM,
 } Screen;
 
 // ---------------------------------------------------------------------------
@@ -167,6 +168,14 @@ static int          s_ts_minutes = 5;
 static int          s_ts_seconds = 0;
 static int          s_ts_field   = 0;  // 0 = 分選択中, 1 = 秒選択中
 
+// Alarm (タイマー満了。ユーザーが止めるまでバイブを繰り返す)
+static TextLayer   *s_alarm_title_layer;
+static TextLayer   *s_alarm_msg_layer;
+static TextLayer   *s_alarm_hint_layer;
+static AppTimer     *s_alarm_timer;
+static char          s_alarm_label[SLOT_LABEL_SIZE];
+#define ALARM_VIBE_INTERVAL_MS 2000
+
 // HOME click config: menu_layer_set_click_config_onto_window() owns SELECT;
 // we chain onto its provider once and add an explicit BACK handler (see
 // home_click_config_provider) instead of relying on default fallback, and
@@ -204,6 +213,7 @@ static void refresh_answer_screen(void);
 static void refresh_weather_screen(void);
 static void refresh_slot_screen(void);
 static void refresh_timer_set_screen(void);
+static void refresh_alarm_screen(void);
 static void refresh_home_menu(void);
 static void set_home_status(const char *text);
 static int handle_timer_set(int32_t seconds, const char *label, bool set_pending_home);
@@ -294,16 +304,41 @@ static bool schedule_timer_wakeup(int idx, int32_t seconds) {
   return false;
 }
 
+// タイマー満了時のバイブを一定間隔で繰り返す（ユーザーが SCREEN_ALARM で
+// 何かボタンを押して止めるまで鳴り続ける）。
+static void alarm_vibe_timer_cb(void *ctx) {
+  vibes_double_pulse();
+  s_alarm_timer = app_timer_register(ALARM_VIBE_INTERVAL_MS, alarm_vibe_timer_cb, NULL);
+}
+
+static void start_alarm_vibration(void) {
+  vibes_double_pulse();
+  s_alarm_timer = app_timer_register(ALARM_VIBE_INTERVAL_MS, alarm_vibe_timer_cb, NULL);
+}
+
+static void stop_alarm_vibration(void) {
+  if (s_alarm_timer) {
+    app_timer_cancel(s_alarm_timer);
+    s_alarm_timer = NULL;
+  }
+}
+
 static void handle_timer_fired(int idx, bool vibrate) {
   if (idx < 0 || idx >= SLOT_COUNT || s_slots[idx].kind != SLOT_TIMER) return;
-  if (vibrate) vibes_double_pulse();
-  snprintf(s_status_buf, sizeof(s_status_buf),
-           "\xe3\x82\xbf\xe3\x82\xa4\xe3\x83\x9e\xe3\x83\xbc\xe7\xb5\x82\xe4\xba\x86 %s",
-           s_slots[idx].label[0] ? s_slots[idx].label : "");
-  // UTF-8: "タイマー終了 <label>"
+  strncpy(s_alarm_label, s_slots[idx].label, SLOT_LABEL_SIZE - 1);
+  s_alarm_label[SLOT_LABEL_SIZE - 1] = '\0';
   clear_slot(idx);
-  set_home_status(s_status_buf);
   refresh_home_menu();
+  if (vibrate) {
+    start_alarm_vibration();
+    show_screen(SCREEN_ALARM);
+  } else {
+    snprintf(s_status_buf, sizeof(s_status_buf),
+             "\xe3\x82\xbf\xe3\x82\xa4\xe3\x83\x9e\xe3\x83\xbc\xe7\xb5\x82\xe4\xba\x86 %s",
+             s_alarm_label[0] ? s_alarm_label : "");
+    // UTF-8: "タイマー終了 <label>"
+    set_home_status(s_status_buf);
+  }
 }
 
 static void wakeup_handler(WakeupId id, int32_t cookie) {
@@ -741,6 +776,28 @@ static void tset_click_config(void *ctx) {
 }
 
 // ---------------------------------------------------------------------------
+// SCREEN_ALARM (タイマー満了。止めるまでバイブを繰り返す)
+// ---------------------------------------------------------------------------
+static void refresh_alarm_screen(void) {
+  text_layer_set_text(s_alarm_msg_layer,
+    s_alarm_label[0] ? s_alarm_label
+                      : "\xe3\x82\xbf\xe3\x82\xa4\xe3\x83\x9e\xe3\x83\xbc\xe7\xb5\x82\xe4\xba\x86");
+                      // "タイマー終了"
+}
+
+static void alarm_dismiss_click(ClickRecognizerRef r, void *ctx) {
+  stop_alarm_vibration();
+  show_screen(SCREEN_HOME);
+}
+
+static void alarm_click_config(void *ctx) {
+  window_single_click_subscribe(BUTTON_ID_SELECT, alarm_dismiss_click);
+  window_single_click_subscribe(BUTTON_ID_BACK, alarm_dismiss_click);
+  window_single_click_subscribe(BUTTON_ID_UP, alarm_dismiss_click);
+  window_single_click_subscribe(BUTTON_ID_DOWN, alarm_dismiss_click);
+}
+
+// ---------------------------------------------------------------------------
 // Menu row callbacks
 // ---------------------------------------------------------------------------
 static void menu_row_talk(void) {
@@ -843,6 +900,9 @@ static void hide_all_screens(void) {
   layer_set_hidden(text_layer_get_layer(s_tset_colon_layer), true);
   layer_set_hidden(text_layer_get_layer(s_tset_sec_layer), true);
   layer_set_hidden(text_layer_get_layer(s_tset_hint_layer), true);
+  layer_set_hidden(text_layer_get_layer(s_alarm_title_layer), true);
+  layer_set_hidden(text_layer_get_layer(s_alarm_msg_layer), true);
+  layer_set_hidden(text_layer_get_layer(s_alarm_hint_layer), true);
 }
 
 // ---------------------------------------------------------------------------
@@ -1016,6 +1076,14 @@ static void show_screen(Screen screen) {
       layer_set_hidden(text_layer_get_layer(s_tset_sec_layer), false);
       layer_set_hidden(text_layer_get_layer(s_tset_hint_layer), false);
       window_set_click_config_provider(s_window, tset_click_config);
+      break;
+
+    case SCREEN_ALARM:
+      refresh_alarm_screen();
+      layer_set_hidden(text_layer_get_layer(s_alarm_title_layer), false);
+      layer_set_hidden(text_layer_get_layer(s_alarm_msg_layer), false);
+      layer_set_hidden(text_layer_get_layer(s_alarm_hint_layer), false);
+      window_set_click_config_provider(s_window, alarm_click_config);
       break;
   }
 }
@@ -1331,6 +1399,21 @@ static void window_load(Window *window) {
     "SEL\xe9\x95\xb7:\xe6\xb1\xba\xe5\xae\x9a");
   // UTF-8: "UP/DN:増減 SEL:切替 SEL長:決定"
 
+  // ── Alarm (タイマー満了) ──────────────────────────────────────────────────
+  s_alarm_title_layer = make_title_bar(root, bounds,
+    "\xe3\x82\xbf\xe3\x82\xa4\xe3\x83\x9e\xe3\x83\xbc\xe7\xb5\x82\xe4\xba\x86");
+  // UTF-8: "タイマー終了"
+
+  s_alarm_msg_layer = text_layer_create(GRect(0, content_top + 30, bounds.size.w, 60));
+  text_layer_set_font(s_alarm_msg_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
+  text_layer_set_text_alignment(s_alarm_msg_layer, GTextAlignmentCenter);
+  layer_add_child(root, text_layer_get_layer(s_alarm_msg_layer));
+
+  s_alarm_hint_layer = make_bottom_hint(root, bounds,
+    "\xe3\x81\xa9\xe3\x82\x8c\xe3\x81\x8b\xe3\x81\xae\xe3\x83\x9c\xe3\x82\xbf\xe3\x83\xb3"
+    "\xe3\x81\xa7\xe5\x81\x9c\xe6\xad\xa2");
+  // UTF-8: "どれかのボタンで停止"
+
   // ── Show initial screen ───────────────────────────────────────────────────
   show_screen(SCREEN_HOME);
 }
@@ -1363,6 +1446,10 @@ static void window_unload(Window *window) {
   text_layer_destroy(s_tset_colon_layer);
   text_layer_destroy(s_tset_sec_layer);
   text_layer_destroy(s_tset_hint_layer);
+
+  text_layer_destroy(s_alarm_title_layer);
+  text_layer_destroy(s_alarm_msg_layer);
+  text_layer_destroy(s_alarm_hint_layer);
 }
 
 // ---------------------------------------------------------------------------
@@ -1408,6 +1495,7 @@ static void init(void) {
 }
 
 static void deinit(void) {
+  stop_alarm_vibration();
   tick_timer_service_unsubscribe();
 #if defined(PBL_MICROPHONE)
   if (s_dictation_session) {

@@ -146,6 +146,15 @@ MenuLayer ベースの専用ビュー（ADR-023。旧 ActionMenu プリセット
   制限がかかる）。
 - **BACK 短押し** — 何も作成せず HOME へ戻る
 
+### 3.6 SCREEN_ALARM（タイマー満了）
+
+タイマーが満了すると、直前まで何を表示していたかに関わらず強制的に
+この画面へ遷移する（ADR-024）。該当スロットは遷移前に削除済み。
+
+- タイトルバー「タイマー終了」、本文にラベル（あれば）を表示。
+- バイブ（double pulse）を `ALARM_VIBE_INTERVAL_MS`（2秒）間隔で繰り返す。
+- **SELECT / BACK / UP / DOWN いずれか短押し** — バイブを止めて HOME へ戻る
+
 ## 4. AppMessage プロトコル
 
 ### 4.1 キー定義
@@ -238,8 +247,12 @@ Phone → Watch: { KEY_STOPWATCH_START: 1, KEY_TIMER_LABEL: "<ラベル|空文�
 - 最短 30 秒（`TIMER_MIN_SECONDS`。それ未満の指定は 30 秒に切り上げ）。
 - 予約失敗（排他ウィンドウ衝突等で負値）時は **5 秒ずらして最大 8 回リトライ**。
   全滅時はスロットを作らず「予約失敗」を表示。
-- 満了時: バイブ（double pulse）+ 該当スロット削除 + ステータス行に「タイマー終了 <ラベル>」。
-  - アプリがフォアグラウンド: `wakeup_service_subscribe` ハンドラで処理。
+- 満了時: 該当スロットは即座に削除し、専用の SCREEN_ALARM 画面へ遷移する
+  （ADR-024）。バイブ（double pulse）は `ALARM_VIBE_INTERVAL_MS`（2秒）間隔で
+  ユーザーがボタン（SELECT/BACK/UP/DOWNいずれか）を押して止めるまで繰り返す
+  （旧: 一度だけ鳴らしてステータス行に表示するのみだった挙動を変更）。
+  - アプリがフォアグラウンド: `wakeup_service_subscribe` ハンドラで処理。画面は
+    ユーザーが何をしていても強制的に SCREEN_ALARM に切り替わる。
   - アプリ非起動: システムがアプリを Wakeup 起動し、`launch_reason() == APP_LAUNCH_WAKEUP`
     経路で同処理。
 - 起動時サニタイズ: 実行中タイマーの `wakeup_query` が無効な場合、満了済みなら削除、
