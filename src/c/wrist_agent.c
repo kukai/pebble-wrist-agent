@@ -174,7 +174,7 @@ static TextLayer   *s_alarm_msg_layer;
 static TextLayer   *s_alarm_hint_layer;
 static AppTimer     *s_alarm_timer;
 static char          s_alarm_label[SLOT_LABEL_SIZE];
-#define ALARM_VIBE_INTERVAL_MS 2000
+#define ALARM_VIBE_INTERVAL_MS 1000
 
 // HOME click config: menu_layer_set_click_config_onto_window() owns SELECT;
 // we chain onto its provider once and add an explicit BACK handler (see
@@ -1358,14 +1358,22 @@ static void window_load(Window *window) {
   s_answer_hint_layer = make_bottom_hint(root, bounds, "");
 
   // ── Slot view (タイマー/ストップウォッチ) ───────────────────────────────
+  // 時間表示+サブテキストのブロックをコンテンツ領域内で上下中央に配置する。
   s_slot_title_layer = make_title_bar(root, bounds, "");
 
-  s_slot_time_layer = text_layer_create(GRect(0, content_top + 10, bounds.size.w, 50));
+  const int slot_time_h  = 50;
+  const int slot_sub_h   = 30;
+  const int slot_gap     = 4;
+  int slot_block_h = slot_time_h + slot_gap + slot_sub_h;
+  int slot_block_y = content_top + (content_h - slot_block_h) / 2;
+
+  s_slot_time_layer = text_layer_create(GRect(0, slot_block_y, bounds.size.w, slot_time_h));
   text_layer_set_font(s_slot_time_layer, fonts_get_system_font(FONT_KEY_BITHAM_42_BOLD));
   text_layer_set_text_alignment(s_slot_time_layer, GTextAlignmentCenter);
   layer_add_child(root, text_layer_get_layer(s_slot_time_layer));
 
-  s_slot_sub_layer = text_layer_create(GRect(0, content_top + 64, bounds.size.w, 30));
+  s_slot_sub_layer = text_layer_create(
+    GRect(0, slot_block_y + slot_time_h + slot_gap, bounds.size.w, slot_sub_h));
   text_layer_set_font(s_slot_sub_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
   text_layer_set_text_alignment(s_slot_sub_layer, GTextAlignmentCenter);
   layer_add_child(root, text_layer_get_layer(s_slot_sub_layer));
@@ -1373,25 +1381,35 @@ static void window_load(Window *window) {
   s_slot_hint_layer = make_bottom_hint(root, bounds, "");
 
   // ── Timer set picker (分秒ピッカー) ──────────────────────────────────────
+  // 分・コロン・秒をまとめて画面中央に配置し、選択中フィールドのハイライト
+  // (背景反転) が数字の幅にぴったり収まる（画面端まで伸びない）ようにする。
   s_tset_title_layer = make_title_bar(root, bounds,
     "\xe3\x82\xbf\xe3\x82\xa4\xe3\x83\x9e\xe3\x83\xbc\xe8\xa8\xad\xe5\xae\x9a");
   // UTF-8: "タイマー設定"
 
-  int tset_row_y = content_top + 30;
-  s_tset_min_layer = text_layer_create(GRect(0, tset_row_y, bounds.size.w / 2 - 10, 50));
+  const int tset_digit_w = 50;
+  const int tset_colon_w = 20;
+  const int tset_row_h   = 50;
+  int tset_total_w = tset_digit_w * 2 + tset_colon_w;
+  int tset_start_x = (bounds.size.w - tset_total_w) / 2;
+  int tset_row_y   = content_top + (content_h - tset_row_h) / 2;
+
+  s_tset_min_layer = text_layer_create(GRect(tset_start_x, tset_row_y, tset_digit_w, tset_row_h));
   text_layer_set_font(s_tset_min_layer, fonts_get_system_font(FONT_KEY_BITHAM_42_BOLD));
-  text_layer_set_text_alignment(s_tset_min_layer, GTextAlignmentRight);
+  text_layer_set_text_alignment(s_tset_min_layer, GTextAlignmentCenter);
   layer_add_child(root, text_layer_get_layer(s_tset_min_layer));
 
-  s_tset_colon_layer = text_layer_create(GRect(bounds.size.w / 2 - 10, tset_row_y, 20, 50));
+  s_tset_colon_layer = text_layer_create(
+    GRect(tset_start_x + tset_digit_w, tset_row_y, tset_colon_w, tset_row_h));
   text_layer_set_font(s_tset_colon_layer, fonts_get_system_font(FONT_KEY_BITHAM_42_BOLD));
   text_layer_set_text_alignment(s_tset_colon_layer, GTextAlignmentCenter);
   text_layer_set_text(s_tset_colon_layer, ":");
   layer_add_child(root, text_layer_get_layer(s_tset_colon_layer));
 
-  s_tset_sec_layer = text_layer_create(GRect(bounds.size.w / 2 + 10, tset_row_y, bounds.size.w / 2 - 10, 50));
+  s_tset_sec_layer = text_layer_create(
+    GRect(tset_start_x + tset_digit_w + tset_colon_w, tset_row_y, tset_digit_w, tset_row_h));
   text_layer_set_font(s_tset_sec_layer, fonts_get_system_font(FONT_KEY_BITHAM_42_BOLD));
-  text_layer_set_text_alignment(s_tset_sec_layer, GTextAlignmentLeft);
+  text_layer_set_text_alignment(s_tset_sec_layer, GTextAlignmentCenter);
   layer_add_child(root, text_layer_get_layer(s_tset_sec_layer));
 
   s_tset_hint_layer = make_bottom_hint(root, bounds,
@@ -1404,7 +1422,9 @@ static void window_load(Window *window) {
     "\xe3\x82\xbf\xe3\x82\xa4\xe3\x83\x9e\xe3\x83\xbc\xe7\xb5\x82\xe4\xba\x86");
   // UTF-8: "タイマー終了"
 
-  s_alarm_msg_layer = text_layer_create(GRect(0, content_top + 30, bounds.size.w, 60));
+  const int alarm_msg_h = 60;
+  s_alarm_msg_layer = text_layer_create(
+    GRect(0, content_top + (content_h - alarm_msg_h) / 2, bounds.size.w, alarm_msg_h));
   text_layer_set_font(s_alarm_msg_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
   text_layer_set_text_alignment(s_alarm_msg_layer, GTextAlignmentCenter);
   layer_add_child(root, text_layer_get_layer(s_alarm_msg_layer));
