@@ -1387,7 +1387,9 @@ static void window_load(Window *window) {
     "\xe3\x82\xbf\xe3\x82\xa4\xe3\x83\x9e\xe3\x83\xbc\xe8\xa8\xad\xe5\xae\x9a");
   // UTF-8: "タイマー設定"
 
-  const int tset_digit_w = 50;
+  // digit_w は BITHAM_42_BOLD で2桁がちょうど収まる幅。狭すぎると Pebble の
+  // TextLayer が描画しきれず "..." (省略記号) になってしまう（ADR-026）。
+  const int tset_digit_w = 70;
   const int tset_colon_w = 20;
   const int tset_row_h   = 50;
   int tset_total_w = tset_digit_w * 2 + tset_colon_w;
