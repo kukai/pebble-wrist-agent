@@ -36,6 +36,8 @@ typedef struct { char q[HIST_Q_SIZE]; char a[HIST_A_SIZE]; } HistEntry;
 #define TIMER_MIN_SECONDS     30   // Wakeup API rejects reservations < 30 s
 #define WAKEUP_RETRY_MAX      8
 #define WAKEUP_RETRY_SHIFT_S  5    // shift on exclusion-window collision
+// SW の Lap 履歴。上限を超えたら最古を捨てて詰める（HIST_CAP と同じ考え方）。
+#define MAX_LAPS               8
 
 // ---------------------------------------------------------------------------
 // Conversation history persistence
@@ -65,6 +67,8 @@ typedef struct {
   int32_t wakeup_id;  // timer: WakeupId (-1 = none), cookie = slot index
   int32_t last_lap;   // stopwatch: latest lap seconds (0 = none)
   char    label[SLOT_LABEL_SIZE];
+  int32_t laps[MAX_LAPS];  // stopwatch: 記録した Lap 履歴（古い順）
+  uint8_t lap_count;       // 0..MAX_LAPS
 } Slot;
 
 static Slot s_slots[SLOT_COUNT];
@@ -128,6 +132,8 @@ typedef enum {
   SCREEN_WEATHER,
   SCREEN_SLOT,
   SCREEN_TIMER_SET,
+  SCREEN_TIMER_CONFIRM,
+  SCREEN_LAPS,
   SCREEN_ALARM,
 } Screen;
 
@@ -213,6 +219,8 @@ static void refresh_answer_screen(void);
 static void refresh_weather_screen(void);
 static void refresh_slot_screen(void);
 static void refresh_timer_set_screen(void);
+static void refresh_timer_confirm_screen(void);
+static void refresh_laps_screen(void);
 static void refresh_alarm_screen(void);
 static void refresh_home_menu(void);
 static void set_home_status(const char *text);
@@ -592,32 +600,41 @@ static void slot_toggle(int idx) {
   refresh_home_menu();
 }
 
+// リセットは「元の状態に戻すだけ」で、タイマーを自動的に再スタートはしない
+// （以前は再スケジュールして running=1 にしていたが、リセット直後に勝手に
+// 動き出すのは意図に反するとの指摘を受けて変更。再開したい場合はユーザーが
+// 改めて SELECT でトグルする）。
 static void slot_reset(int idx) {
   Slot *s = &s_slots[idx];
   if (s->kind == SLOT_TIMER) {
     if (s->running && s->wakeup_id >= 0) wakeup_cancel(s->wakeup_id);
     s->wakeup_id = -1;
-    if (schedule_timer_wakeup(idx, s->duration)) {
-      s->running = 1;
-    } else {
-      s->running   = 0;
-      s->remaining = s->duration;
-      set_home_status("\xe4\xba\x88\xe7\xb4\x84\xe5\xa4\xb1\xe6\x95\x97");  // "予約失敗"
-    }
+    s->running   = 0;
+    s->remaining = s->duration;
   } else if (s->kind == SLOT_STOPWATCH) {
-    s->running  = 0;
-    s->elapsed  = 0;
-    s->start_ts = 0;
-    s->last_lap = 0;
+    s->running   = 0;
+    s->elapsed   = 0;
+    s->start_ts  = 0;
+    s->last_lap  = 0;
+    s->lap_count = 0;
   }
   persist_slot(idx);
   refresh_home_menu();
 }
 
+// Lap は履歴として複数件保持する（MAX_LAPS 超過時は最古を捨てて詰める）。
 static void slot_lap(int idx) {
   Slot *s = &s_slots[idx];
   if (s->kind != SLOT_STOPWATCH || !s->running) return;
-  s->last_lap = slot_display_seconds(s);
+  int32_t t = slot_display_seconds(s);
+  s->last_lap = t;
+  if (s->lap_count < MAX_LAPS) {
+    s->laps[s->lap_count] = t;
+    s->lap_count++;
+  } else {
+    memmove(s->laps, s->laps + 1, sizeof(int32_t) * (MAX_LAPS - 1));
+    s->laps[MAX_LAPS - 1] = t;
+  }
   persist_slot(idx);
   refresh_home_menu();
 }
@@ -674,9 +691,9 @@ static void refresh_slot_screen(void) {
     ? "SEL:\xe4\xb8\x80\xe6\x99\x82\xe5\x81\x9c\xe6\xad\xa2/\xe5\x86\x8d\xe9\x96\x8b "
       "\xe9\x95\xb7:\xe3\x83\xaa\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88"
       // "SEL:一時停止/再開 長:リセット"
-    : "SEL:\xe9\x96\x8b\xe5\xa7\x8b/\xe5\x81\x9c\xe6\xad\xa2 UP:Lap "
+    : "SEL:\xe9\x96\x8b\xe5\xa7\x8b/\xe5\x81\x9c\xe6\xad\xa2 UP:Lap DOWN:\xe4\xb8\x80\xe8\xa6\xa7 "
       "\xe9\x95\xb7:\xe3\x83\xaa\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88");
-      // "SEL:開始/停止 UP:Lap 長:リセット"
+      // "SEL:開始/停止 UP:Lap DOWN:一覧 長:リセット"
 }
 
 static void slot_select_click(ClickRecognizerRef r, void *ctx) {
@@ -694,6 +711,12 @@ static void slot_up_click(ClickRecognizerRef r, void *ctx) {
   refresh_slot_screen();
 }
 
+// SW の Lap 履歴一覧 (SCREEN_LAPS) へ。タイマーには Lap がないため無視する。
+static void slot_down_click(ClickRecognizerRef r, void *ctx) {
+  if (s_open_slot < 0 || s_slots[s_open_slot].kind != SLOT_STOPWATCH) return;
+  show_screen(SCREEN_LAPS);
+}
+
 static void slot_back_click(ClickRecognizerRef r, void *ctx) {
   show_screen(SCREEN_HOME);
 }
@@ -707,8 +730,32 @@ static void slot_click_config(void *ctx) {
   window_single_click_subscribe(BUTTON_ID_SELECT, slot_select_click);
   window_long_click_subscribe(BUTTON_ID_SELECT, 700, slot_select_long_click, NULL);
   window_single_click_subscribe(BUTTON_ID_UP, slot_up_click);
+  window_single_click_subscribe(BUTTON_ID_DOWN, slot_down_click);
   window_single_click_subscribe(BUTTON_ID_BACK, slot_back_click);
   window_long_click_subscribe(BUTTON_ID_BACK, 700, slot_back_long_click, NULL);
+}
+
+// ---------------------------------------------------------------------------
+// SCREEN_LAPS (SW の Lap 履歴一覧。ANSWER/WEATHER と同じ共有レイヤーを使う)
+// ---------------------------------------------------------------------------
+static void refresh_laps_screen(void) {
+  if (s_open_slot < 0 || s_slots[s_open_slot].kind != SLOT_STOPWATCH) return;
+  Slot *s = &s_slots[s_open_slot];
+  char body[512];
+  size_t len = 0;
+  body[0] = '\0';
+  if (s->lap_count == 0) {
+    snprintf(body, sizeof(body), "\xe3\x83\xa9\xe3\x83\x83\xe3\x83\x97\xe3\x81\xaa\xe3\x81\x97");
+    // UTF-8: "ラップなし"
+  } else {
+    for (int i = 0; i < s->lap_count; i++) {
+      char lbuf[12];
+      format_hms(lbuf, sizeof(lbuf), s->laps[i]);
+      len += snprintf(body + len, sizeof(body) - len, "Lap %d: %s\n", i + 1, lbuf);
+      if (len >= sizeof(body)) break;
+    }
+  }
+  set_answer_style_content("Lap", body, "BACK: \xe6\x88\xbb\xe3\x82\x8b");  // UTF-8: "BACK: 戻る"
 }
 
 // ---------------------------------------------------------------------------
@@ -729,11 +776,14 @@ static void refresh_timer_set_screen(void) {
   text_layer_set_text_color(s_tset_sec_layer, min_selected ? GColorBlack : GColorWhite);
 }
 
+// 秒は10秒刻み（0/10/.../50）で選ぶ。
+#define TSET_SECOND_STEP 10
+
 static void tset_up_click(ClickRecognizerRef r, void *ctx) {
   if (s_ts_field == 0) {
     s_ts_minutes = (s_ts_minutes + 1) % 181;
   } else {
-    s_ts_seconds = (s_ts_seconds + 1) % 60;
+    s_ts_seconds = (s_ts_seconds + TSET_SECOND_STEP) % 60;
   }
   refresh_timer_set_screen();
 }
@@ -742,24 +792,20 @@ static void tset_down_click(ClickRecognizerRef r, void *ctx) {
   if (s_ts_field == 0) {
     s_ts_minutes = (s_ts_minutes + 180) % 181;
   } else {
-    s_ts_seconds = (s_ts_seconds + 59) % 60;
+    s_ts_seconds = (s_ts_seconds + (60 - TSET_SECOND_STEP)) % 60;
   }
   refresh_timer_set_screen();
 }
 
+// SELECT 短押しは「分→秒→確認画面」と前に進むだけにする（長押しでの確定は
+// 直感に反するという指摘を受け、専用の確認ビュー SCREEN_TIMER_CONFIRM へ
+// 遷移させる方式に変更した）。確認画面で BACK を押すと分の入力からやり直せる。
 static void tset_select_click(ClickRecognizerRef r, void *ctx) {
-  s_ts_field = s_ts_field == 0 ? 1 : 0;
-  refresh_timer_set_screen();
-}
-
-static void tset_select_long_click(ClickRecognizerRef r, void *ctx) {
-  int32_t seconds = (int32_t)(s_ts_minutes * 60 + s_ts_seconds);
-  int idx = handle_timer_set(seconds, NULL, false);
-  if (idx >= 0) {
-    s_open_slot = idx;
-    show_screen(SCREEN_SLOT);
+  if (s_ts_field == 0) {
+    s_ts_field = 1;
+    refresh_timer_set_screen();
   } else {
-    show_screen(SCREEN_HOME);
+    show_screen(SCREEN_TIMER_CONFIRM);
   }
 }
 
@@ -771,8 +817,50 @@ static void tset_click_config(void *ctx) {
   window_single_click_subscribe(BUTTON_ID_UP, tset_up_click);
   window_single_click_subscribe(BUTTON_ID_DOWN, tset_down_click);
   window_single_click_subscribe(BUTTON_ID_SELECT, tset_select_click);
-  window_long_click_subscribe(BUTTON_ID_SELECT, 700, tset_select_long_click, NULL);
   window_single_click_subscribe(BUTTON_ID_BACK, tset_back_click);
+}
+
+// ---------------------------------------------------------------------------
+// SCREEN_TIMER_CONFIRM (分秒ピッカーの確定画面。長押しの代わりに明示的な
+// 確認ステップを設ける)。表示は SCREEN_SLOT と同じレイヤーを再利用する
+// （幅の狭い s_tset_min_layer 等を流用すると ADR-026 と同じ省略記号の
+// 問題が再発するため、フル幅の s_slot_* 側を使う）。
+// ---------------------------------------------------------------------------
+static void refresh_timer_confirm_screen(void) {
+  text_layer_set_text(s_slot_title_layer,
+    "\xe7\xa2\xba\xe8\xaa\x8d");  // UTF-8: "確認"
+  static char value_buf[16];
+  snprintf(value_buf, sizeof(value_buf), "%02d:%02d", s_ts_minutes, s_ts_seconds);
+  text_layer_set_text(s_slot_time_layer, value_buf);
+  text_layer_set_text(s_slot_sub_layer,
+    "\xe3\x81\x93\xe3\x81\xae\xe6\x99\x82\xe9\x96\x93\xe3\x81\xa7\xe9\x96\x8b"
+    "\xe5\xa7\x8b\xe3\x81\x97\xe3\x81\xbe\xe3\x81\x99\xe3\x81\x8b\xef\xbc\x9f");
+    // UTF-8: "この時間で開始しますか？"
+  text_layer_set_text(s_slot_hint_layer,
+    "SEL:\xe9\x96\x8b\xe5\xa7\x8b BACK:\xe3\x82\x84\xe3\x82\x8a\xe7\x9b\xb4\xe3\x81\x99");
+    // UTF-8: "SEL:開始 BACK:やり直す"
+}
+
+static void tconfirm_select_click(ClickRecognizerRef r, void *ctx) {
+  int32_t seconds = (int32_t)(s_ts_minutes * 60 + s_ts_seconds);
+  int idx = handle_timer_set(seconds, NULL, false);
+  if (idx >= 0) {
+    s_open_slot = idx;
+    show_screen(SCREEN_SLOT);
+  } else {
+    show_screen(SCREEN_HOME);
+  }
+}
+
+// やり直す場合は分の入力からやり直す（値は保持したまま）
+static void tconfirm_back_click(ClickRecognizerRef r, void *ctx) {
+  s_ts_field = 0;
+  show_screen(SCREEN_TIMER_SET);
+}
+
+static void tconfirm_click_config(void *ctx) {
+  window_single_click_subscribe(BUTTON_ID_SELECT, tconfirm_select_click);
+  window_single_click_subscribe(BUTTON_ID_BACK, tconfirm_back_click);
 }
 
 // ---------------------------------------------------------------------------
@@ -966,6 +1054,18 @@ static void weather_click_config(void *ctx) {
   window_single_click_subscribe(BUTTON_ID_DOWN, answer_down_click);
 }
 
+// Lap 一覧は HOME でなく SLOT (ストップウォッチ操作画面) へ戻る
+static void laps_back_click(ClickRecognizerRef r, void *ctx) {
+  show_screen(SCREEN_SLOT);
+}
+
+static void laps_click_config(void *ctx) {
+  window_single_click_subscribe(BUTTON_ID_SELECT, laps_back_click);
+  window_single_click_subscribe(BUTTON_ID_BACK, laps_back_click);
+  window_single_click_subscribe(BUTTON_ID_UP, answer_up_click);
+  window_single_click_subscribe(BUTTON_ID_DOWN, answer_down_click);
+}
+
 // LOADING 中は「操作無効」の仕様どおり BACK も含めて何も起きないようにする。
 // 何もサブスクライブしないと BACK はデフォルトの「ウィンドウを閉じる」動作にフォール
 // バックしてしまい、リクエスト中にアプリが終了できてしまうため明示的に無効化する。
@@ -1076,6 +1176,23 @@ static void show_screen(Screen screen) {
       layer_set_hidden(text_layer_get_layer(s_tset_sec_layer), false);
       layer_set_hidden(text_layer_get_layer(s_tset_hint_layer), false);
       window_set_click_config_provider(s_window, tset_click_config);
+      break;
+
+    case SCREEN_TIMER_CONFIRM:
+      refresh_timer_confirm_screen();
+      layer_set_hidden(text_layer_get_layer(s_slot_title_layer), false);
+      layer_set_hidden(text_layer_get_layer(s_slot_time_layer), false);
+      layer_set_hidden(text_layer_get_layer(s_slot_sub_layer), false);
+      layer_set_hidden(text_layer_get_layer(s_slot_hint_layer), false);
+      window_set_click_config_provider(s_window, tconfirm_click_config);
+      break;
+
+    case SCREEN_LAPS:
+      refresh_laps_screen();
+      layer_set_hidden(text_layer_get_layer(s_answer_title_layer), false);
+      layer_set_hidden(scroll_layer_get_layer(s_answer_scroll_layer), false);
+      layer_set_hidden(text_layer_get_layer(s_answer_hint_layer), false);
+      window_set_click_config_provider(s_window, laps_click_config);
       break;
 
     case SCREEN_ALARM:
