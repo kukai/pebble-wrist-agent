@@ -170,8 +170,13 @@ static TextLayer   *s_tset_min_layer;
 static TextLayer   *s_tset_colon_layer;
 static TextLayer   *s_tset_sec_layer;
 static TextLayer   *s_tset_hint_layer;
-static int          s_ts_minutes = 5;
-static int          s_ts_seconds = 0;
+// 新規作成・既存タイマーの「時間設定」いずれも、この初期値から始める。
+// 既存タイマーの現在の長さをプリフィルしない（「リセット」という言葉から
+// 期待される「まっさらな初期状態に戻る」という直感に合わせるため。ADR-031）。
+#define TSET_DEFAULT_MINUTES 5
+#define TSET_DEFAULT_SECONDS 0
+static int          s_ts_minutes = TSET_DEFAULT_MINUTES;
+static int          s_ts_seconds = TSET_DEFAULT_SECONDS;
 static int          s_ts_field   = 0;  // 0 = 分選択中, 1 = 秒選択中
 
 // Alarm (タイマー満了。ユーザーが止めるまでバイブを繰り返す)
@@ -701,8 +706,10 @@ static void slot_select_click(ClickRecognizerRef r, void *ctx) {
 static void slot_select_long_click(ClickRecognizerRef r, void *ctx) {
   Slot *s = &s_slots[s_open_slot];
   if (s->kind == SLOT_TIMER) {
-    s_ts_minutes = (int)(s->duration / 60);
-    s_ts_seconds = (int)(s->duration % 60);
+    // 既存の長さはプリフィルせず、常にデフォルト値から時間設定を開始する
+    // （ADR-031）。
+    s_ts_minutes = TSET_DEFAULT_MINUTES;
+    s_ts_seconds = TSET_DEFAULT_SECONDS;
     s_ts_field   = 0;
     show_screen(SCREEN_TIMER_SET);
   } else {
@@ -965,8 +972,8 @@ static void menu_item_timer(void) {
     }
   }
   s_open_slot  = -1;  // 新規作成であって既存タイマーの編集ではないことを明示
-  s_ts_minutes = 5;
-  s_ts_seconds = 0;
+  s_ts_minutes = TSET_DEFAULT_MINUTES;
+  s_ts_seconds = TSET_DEFAULT_SECONDS;
   s_ts_field   = 0;
   show_screen(SCREEN_TIMER_SET);
 }
