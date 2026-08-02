@@ -779,6 +779,15 @@ static void refresh_timer_set_screen(void) {
   text_layer_set_text_color(s_tset_min_layer, min_selected ? GColorWhite : GColorBlack);
   text_layer_set_background_color(s_tset_sec_layer, min_selected ? GColorWhite : GColorBlack);
   text_layer_set_text_color(s_tset_sec_layer, min_selected ? GColorBlack : GColorWhite);
+
+  // ヒントは編集中フィールドで SEL/BACK の行き先が変わるので都度更新する
+  text_layer_set_text(s_tset_hint_layer, min_selected
+    ? "UP/DN:\xe5\xa2\x97\xe6\xb8\x9b SEL:\xe7\xa7\x92\xe3\x81\xb8 "
+      "BACK:\xe3\x82\xad\xe3\x83\xa3\xe3\x83\xb3\xe3\x82\xbb\xe3\x83\xab"
+      // "UP/DN:増減 SEL:秒へ BACK:キャンセル"
+    : "UP/DN:\xe5\xa2\x97\xe6\xb8\x9b SEL:\xe7\xa2\xba\xe8\xaa\x8d\xe3\x81\xb8 "
+      "BACK:\xe5\x88\x86\xe3\x81\xb8\xe6\x88\xbb\xe3\x82\x8b");
+      // "UP/DN:増減 SEL:確認へ BACK:分へ戻る"
 }
 
 // 秒は10秒刻み（0/10/.../50）で選ぶ。
@@ -826,8 +835,15 @@ static void tset_select_click(ClickRecognizerRef r, void *ctx) {
   }
 }
 
+// 秒を編集中の BACK は一段階戻って分編集へ（キャンセルではない）。
+// 分編集中の BACK のみ HOME へ戻る（キャンセル）。
 static void tset_back_click(ClickRecognizerRef r, void *ctx) {
-  show_screen(SCREEN_HOME);
+  if (s_ts_field == 1) {
+    s_ts_field = 0;
+    refresh_timer_set_screen();
+  } else {
+    show_screen(SCREEN_HOME);
+  }
 }
 
 static void tset_click_config(void *ctx) {
@@ -1564,10 +1580,9 @@ static void window_load(Window *window) {
   text_layer_set_text_alignment(s_tset_sec_layer, GTextAlignmentCenter);
   layer_add_child(root, text_layer_get_layer(s_tset_sec_layer));
 
-  s_tset_hint_layer = make_bottom_hint(root, bounds,
-    "UP/DN:\xe5\xa2\x97\xe6\xb8\x9b SEL:\xe5\x88\x87\xe6\x9b\xbf "
-    "SEL\xe9\x95\xb7:\xe6\xb1\xba\xe5\xae\x9a");
-  // UTF-8: "UP/DN:増減 SEL:切替 SEL長:決定"
+  s_tset_hint_layer = make_bottom_hint(root, bounds, "");
+  // 実際のヒント文言は refresh_timer_set_screen() が編集中フィールドに
+  // 応じて都度設定する
 
   // ── Alarm (タイマー満了) ──────────────────────────────────────────────────
   s_alarm_title_layer = make_title_bar(root, bounds,
