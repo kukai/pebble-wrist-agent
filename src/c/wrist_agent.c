@@ -301,20 +301,33 @@ static void trim_utf8_tail(char *buf) {
 // Wakeup (timers)
 // ---------------------------------------------------------------------------
 // 排他ウィンドウ衝突 (負値エラー) 時は数秒ずらして再試行する
-static bool schedule_timer_wakeup(int idx, int32_t seconds) {
+// OS への Wakeup 予約のみを行い、実際に予約できた時刻を *out_target に返す
+// （呼び出し元が target_ts を書き換えるかどうかを選べるようにするため。
+// ADR-035）。30秒未満は Wakeup API の制約で30秒にクランプされる。
+static bool schedule_timer_wakeup_only(int idx, int32_t seconds, time_t *out_target) {
   if (seconds < TIMER_MIN_SECONDS) seconds = TIMER_MIN_SECONDS;
   time_t target = time(NULL) + seconds;
   for (int attempt = 0; attempt < WAKEUP_RETRY_MAX; attempt++) {
     WakeupId id = wakeup_schedule(target, idx, true);
     if (id >= 0) {
       s_slots[idx].wakeup_id = id;
-      s_slots[idx].target_ts = target;
+      if (out_target) *out_target = target;
       return true;
     }
     APP_LOG(APP_LOG_LEVEL_WARNING, "wakeup_schedule failed (%d), shifting", (int)id);
     target += WAKEUP_RETRY_SHIFT_S;
   }
   return false;
+}
+
+// 新規作成・sanitize 用: target_ts も含めて予約する（従来どおりの挙動。
+// 30秒未満の指定は表示上の残り時間も含めて30秒に切り上げてよい場面
+// でのみ使う）。
+static bool schedule_timer_wakeup(int idx, int32_t seconds) {
+  time_t target;
+  bool ok = schedule_timer_wakeup_only(idx, seconds, &target);
+  if (ok) s_slots[idx].target_ts = target;
+  return ok;
 }
 
 // タイマー満了時のバイブを一定間隔で繰り返す（ユーザーが SCREEN_ALARM で
@@ -585,7 +598,16 @@ static void slot_toggle(int idx) {
       s->remaining = rem < 1 ? 1 : rem;
       s->running = 0;
     } else {
-      if (schedule_timer_wakeup(idx, s->remaining)) {
+      // 残り30秒未満は Wakeup を30秒後にしか予約できないが、表示（target_ts）
+      // まで30秒に巻き戻すと「一時停止→再開で設定時間に戻る」ように見える
+      // バグになる（ADR-035）。表示は常に本当の残り時間を使い、フォア
+      // グラウンド中は tick_handler が正確なタイミングで満了を検知する。
+      // Wakeup 予約自体はバックグラウンド時の保険としてベストエフォートで
+      // 試みる（30秒未満なら実際にはその30秒後に鳴る）。
+      time_t true_target = time(NULL) + s->remaining;
+      time_t wakeup_target;
+      if (schedule_timer_wakeup_only(idx, s->remaining, &wakeup_target)) {
+        s->target_ts = (s->remaining < TIMER_MIN_SECONDS) ? true_target : wakeup_target;
         s->running = 1;
       } else {
         set_home_status("\xe4\xba\x88\xe7\xb4\x84\xe5\xa4\xb1\xe6\x95\x97");  // "予約失敗"
@@ -1005,6 +1027,16 @@ static void menu_select_callback(MenuLayer *menu, MenuIndex *index, void *ctx) {
 // timestamps)
 // ---------------------------------------------------------------------------
 static void tick_handler(struct tm *tick_time, TimeUnits units_changed) {
+  // フォアグラウンドにいる間は、実際の満了（target_ts 到達）を Wakeup の
+  // 通知を待たずに検知する。30秒未満で再開したタイマー（ADR-035）は
+  // Wakeup が30秒後にしか予約できないため、これがないと画面を見ていても
+  // 満了に気づけない。
+  for (int i = 0; i < SLOT_COUNT; i++) {
+    Slot *s = &s_slots[i];
+    if (s->kind == SLOT_TIMER && s->running && slot_display_seconds(s) <= 0) {
+      handle_timer_fired(i, true);
+    }
+  }
   if (s_current_screen == SCREEN_HOME && s_home_menu_layer) {
     layer_mark_dirty(menu_layer_get_layer(s_home_menu_layer));
   } else if (s_current_screen == SCREEN_SLOT) {
