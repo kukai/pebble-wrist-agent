@@ -605,19 +605,26 @@ static void slot_toggle(int idx) {
   refresh_home_menu();
 }
 
-// SW のリセット（0秒・停止状態・Lap履歴クリア）。
-// タイマー側はここでは扱わない — 「リセットしても元の時間に戻るだけで
-// 新しい時間を設定できない」との指摘を受け、SELECT長押しは分秒ピッカー
-// （現在の時間をプリセットした状態）を開く方式に変更した
-// （slot_select_long_click 参照）。
+// リセットは「その場で即座に確定する」操作（ADR-032）。ピッカーを経由する
+// 方式（ADR-028）だと、リセットしたつもりで BACK によりキャンセルした場合
+// に元の（一時停止中などの）状態がそのまま残ってしまい、「リセットが
+// 中途半端」という指摘を受けた。時間を新しく設定し直したい場合は別操作
+// （DOWN。slot_down_click 参照）を用意し、「リセット」と「時間の再設定」
+// を明確に分離した。
 static void slot_reset(int idx) {
   Slot *s = &s_slots[idx];
-  if (s->kind != SLOT_STOPWATCH) return;
-  s->running   = 0;
-  s->elapsed   = 0;
-  s->start_ts  = 0;
-  s->last_lap  = 0;
-  s->lap_count = 0;
+  if (s->kind == SLOT_TIMER) {
+    if (s->running && s->wakeup_id >= 0) wakeup_cancel(s->wakeup_id);
+    s->wakeup_id = -1;
+    s->running   = 0;
+    s->remaining = s->duration;
+  } else if (s->kind == SLOT_STOPWATCH) {
+    s->running   = 0;
+    s->elapsed   = 0;
+    s->start_ts  = 0;
+    s->last_lap  = 0;
+    s->lap_count = 0;
+  }
   persist_slot(idx);
   refresh_home_menu();
 }
@@ -689,8 +696,9 @@ static void refresh_slot_screen(void) {
 
   text_layer_set_text(s_slot_hint_layer, is_timer
     ? "SEL:\xe4\xb8\x80\xe6\x99\x82\xe5\x81\x9c\xe6\xad\xa2/\xe5\x86\x8d\xe9\x96\x8b "
-      "\xe9\x95\xb7:\xe6\x99\x82\xe9\x96\x93\xe8\xa8\xad\xe5\xae\x9a"
-      // "SEL:一時停止/再開 長:時間設定"
+      "DOWN:\xe6\x99\x82\xe9\x96\x93\xe5\xa4\x89\xe6\x9b\xb4 "
+      "\xe9\x95\xb7:\xe3\x83\xaa\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88"
+      // "SEL:一時停止/再開 DOWN:時間変更 長:リセット"
     : "SEL:\xe9\x96\x8b\xe5\xa7\x8b/\xe5\x81\x9c\xe6\xad\xa2 UP:Lap DOWN:\xe4\xb8\x80\xe8\xa6\xa7 "
       "\xe9\x95\xb7:\xe3\x83\xaa\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88");
       // "SEL:開始/停止 UP:Lap DOWN:一覧 長:リセット"
@@ -701,21 +709,9 @@ static void slot_select_click(ClickRecognizerRef r, void *ctx) {
   refresh_slot_screen();
 }
 
-// タイマーは「時間を設定し直す」(分秒ピッカーを現在の長さで開く) へ、
-// SW は従来どおり即座にリセットする。
 static void slot_select_long_click(ClickRecognizerRef r, void *ctx) {
-  Slot *s = &s_slots[s_open_slot];
-  if (s->kind == SLOT_TIMER) {
-    // 既存の長さはプリフィルせず、常にデフォルト値から時間設定を開始する
-    // （ADR-031）。
-    s_ts_minutes = TSET_DEFAULT_MINUTES;
-    s_ts_seconds = TSET_DEFAULT_SECONDS;
-    s_ts_field   = 0;
-    show_screen(SCREEN_TIMER_SET);
-  } else {
-    slot_reset(s_open_slot);
-    refresh_slot_screen();
-  }
+  slot_reset(s_open_slot);
+  refresh_slot_screen();
 }
 
 static void slot_up_click(ClickRecognizerRef r, void *ctx) {
@@ -724,9 +720,18 @@ static void slot_up_click(ClickRecognizerRef r, void *ctx) {
 }
 
 // SW の Lap 履歴一覧 (SCREEN_LAPS) へ。タイマーには Lap がないため無視する。
+// タイマー: 時間の再設定（分秒ピッカーをデフォルト値で開く。ADR-031/032）。
+// ストップウォッチ: Lap 履歴一覧 (SCREEN_LAPS) を開く。
 static void slot_down_click(ClickRecognizerRef r, void *ctx) {
-  if (s_open_slot < 0 || s_slots[s_open_slot].kind != SLOT_STOPWATCH) return;
-  show_screen(SCREEN_LAPS);
+  if (s_open_slot < 0) return;
+  if (s_slots[s_open_slot].kind == SLOT_TIMER) {
+    s_ts_minutes = TSET_DEFAULT_MINUTES;
+    s_ts_seconds = TSET_DEFAULT_SECONDS;
+    s_ts_field   = 0;
+    show_screen(SCREEN_TIMER_SET);
+  } else if (s_slots[s_open_slot].kind == SLOT_STOPWATCH) {
+    show_screen(SCREEN_LAPS);
+  }
 }
 
 static void slot_back_click(ClickRecognizerRef r, void *ctx) {
@@ -884,7 +889,7 @@ static void refresh_timer_confirm_screen(void) {
 static void tconfirm_select_click(ClickRecognizerRef r, void *ctx) {
   int32_t seconds = (int32_t)(s_ts_minutes * 60 + s_ts_seconds);
   if (s_open_slot >= 0 && s_slots[s_open_slot].kind == SLOT_TIMER) {
-    // 既存タイマーの時間を設定し直す（SLOT の SELECT長押しから来たケース）。
+    // 既存タイマーの時間を設定し直す（SLOT の DOWN から来たケース）。
     // handle_timer_set() は「タイマーは1件まで」のガードで既存分を弾いて
     // しまうため、ここでは直接スロットを書き換える。
     Slot *s = &s_slots[s_open_slot];
