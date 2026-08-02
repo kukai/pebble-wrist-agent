@@ -784,12 +784,23 @@ static void refresh_timer_set_screen(void) {
 // 秒は10秒刻み（0/10/.../50）で選ぶ。
 #define TSET_SECOND_STEP 10
 
+// Wakeup API は30秒未満を予約できず、handle_timer_set() がその場合
+// TIMER_MIN_SECONDS(30) に黙って切り上げてしまう。ピッカーで30秒未満を
+// 選べてしまうと「10秒を選んだのに30秒になる」という見た目と結果の食い違い
+// が起きるため、分=0のときは秒を30未満に選べないようにする。
+static void tset_clamp_min_duration(void) {
+  if (s_ts_minutes == 0 && s_ts_seconds < TIMER_MIN_SECONDS) {
+    s_ts_seconds = TIMER_MIN_SECONDS;
+  }
+}
+
 static void tset_up_click(ClickRecognizerRef r, void *ctx) {
   if (s_ts_field == 0) {
     s_ts_minutes = (s_ts_minutes + 1) % 181;
   } else {
     s_ts_seconds = (s_ts_seconds + TSET_SECOND_STEP) % 60;
   }
+  tset_clamp_min_duration();
   refresh_timer_set_screen();
 }
 
@@ -799,6 +810,7 @@ static void tset_down_click(ClickRecognizerRef r, void *ctx) {
   } else {
     s_ts_seconds = (s_ts_seconds + (60 - TSET_SECOND_STEP)) % 60;
   }
+  tset_clamp_min_duration();
   refresh_timer_set_screen();
 }
 
