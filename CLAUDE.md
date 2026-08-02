@@ -68,6 +68,16 @@ If no rework occurred, output nothing. Do not pad.
 - Never write secrets, tokens, or credentials into any file in this repo.
 - Cloud/web sessions: this repo is your entire context. If something
   seems missing (env vars, credentials), say so; do not improvise.
+- Before implementing a behavior change requested via an ambiguous,
+  emotionally-loaded verb ("reset", "clear", "fix"), restate the
+  expected end state as concrete before/after examples (what the
+  screen shows, what state persists) and get confirmation — before
+  writing code. Do not iterate by shipping one interpretation at a
+  time and waiting for correction.
+- When a working tree straddles multiple long-lived branches (e.g.
+  a feature branch plus a disposable `staging` branch), run `git
+  branch --show-current` immediately before every commit. Do not
+  assume the checkout left by a prior step.
 
 ---
 
