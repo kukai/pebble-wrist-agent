@@ -684,21 +684,30 @@ static void slot_select_click(ClickRecognizerRef r, void *ctx) {
   refresh_slot_screen();
 }
 
-// リセット = スロットを完全にクリアして未設定に戻す（タイマー・SW とも
-// 共通。ADR-033）。タイマーはそのまま時刻設定画面（分秒ピッカー）へ進み、
-// 次の時間をすぐ設定できるようにする。SW には設定すべき値がないため
-// HOME へ戻る（次に「ストップウォッチ」を選べば即座に開始できる）。
+// タイマー: 「未設定」に相当する自然な待機状態がないため、リセット＝
+// スロットを完全にクリアしてそのまま時刻設定画面（分秒ピッカー）へ進む
+// （ADR-034）。
+// SW: 実物のストップウォッチと同じく「00:00で止まっている」のが自然な
+// 待機状態なので、スロットは消さず 0秒・停止状態にリセットして同じ
+// SLOT 画面にとどまる（HOME には遷移しない）。
 static void slot_select_long_click(ClickRecognizerRef r, void *ctx) {
-  SlotKind kind = (SlotKind)s_slots[s_open_slot].kind;
-  slot_delete(s_open_slot);
-  if (kind == SLOT_TIMER) {
+  Slot *s = &s_slots[s_open_slot];
+  if (s->kind == SLOT_TIMER) {
+    slot_delete(s_open_slot);
     s_open_slot  = -1;
     s_ts_minutes = TSET_DEFAULT_MINUTES;
     s_ts_seconds = TSET_DEFAULT_SECONDS;
     s_ts_field   = 0;
     show_screen(SCREEN_TIMER_SET);
-  } else {
-    show_screen(SCREEN_HOME);
+  } else if (s->kind == SLOT_STOPWATCH) {
+    s->running   = 0;
+    s->elapsed   = 0;
+    s->start_ts  = 0;
+    s->last_lap  = 0;
+    s->lap_count = 0;
+    persist_slot(s_open_slot);
+    refresh_home_menu();
+    refresh_slot_screen();
   }
 }
 
@@ -945,6 +954,11 @@ static void menu_item_timer(void) {
 }
 
 // 未設定なら即座にストップウォッチを開始、設定済みなら専用ビューを開く
+// 未設定なら 0秒・停止状態で新規作成する（HOME からのボタン操作では
+// オートスタートしない。ADR-034）。音声経由の start_stopwatch
+// （handle_stopwatch_start）は従来どおり即座に計測を開始する — 「今から
+// 計測して」という発話の意図に対応するため、この関数とはロジックを共有
+// しない。
 static void menu_item_stopwatch(void) {
   for (int i = 0; i < SLOT_COUNT; i++) {
     if (s_slots[i].kind == SLOT_STOPWATCH) {
@@ -953,11 +967,20 @@ static void menu_item_stopwatch(void) {
       return;
     }
   }
-  int idx = handle_stopwatch_start(NULL, false);
-  if (idx >= 0) {
-    s_open_slot = idx;
-    show_screen(SCREEN_SLOT);
+  int idx = find_free_slot();
+  if (idx < 0) {
+    set_home_status("\xe3\x82\xbf\xe3\x82\xa4\xe3\x83\x9e\xe3\x83\xbc\xe6\x9e\xa0"
+                    "\xe6\xba\x80\xe6\x9d\xaf");  // UTF-8: "タイマー枠満杯"
+    return;
   }
+  Slot *s = &s_slots[idx];
+  memset(s, 0, sizeof(Slot));
+  s->kind      = SLOT_STOPWATCH;
+  s->wakeup_id = -1;
+  persist_slot(idx);
+  refresh_home_menu();
+  s_open_slot = idx;
+  show_screen(SCREEN_SLOT);
 }
 
 // 音声を使わず「今日の天気を教えて」を送信する。既存の get_weather ツール（JS 側）が
