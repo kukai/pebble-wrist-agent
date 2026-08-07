@@ -211,6 +211,8 @@ static char      s_answer_title_text[16];
 
 // 音声経由でタイマー/SWをセットした直後の応答は ANSWER でなく HOME に戻す
 static bool      s_pending_home = false;
+// 上記で HOME に戻る代わりに開く、音声で作成したスロットの番号（-1 なら作成失敗）
+static int       s_pending_open_slot = -1;
 // 「天気」経由の応答は ANSWER でなく SCREEN_WEATHER に表示する
 static bool      s_pending_weather = false;
 
@@ -1402,11 +1404,13 @@ static void inbox_received_handler(DictionaryIterator *iter, void *ctx) {
   }
 
   if (timer_tuple) {
-    handle_timer_set(timer_tuple->value->int32, label, true);
+    int idx = handle_timer_set(timer_tuple->value->int32, label, true);
+    if (idx >= 0) s_pending_open_slot = idx;
   }
 
   if (sw_tuple) {
-    handle_stopwatch_start(label, true);
+    int idx = handle_stopwatch_start(label, true);
+    if (idx >= 0) s_pending_open_slot = idx;
   }
 
   if (resp_tuple) {
@@ -1414,11 +1418,18 @@ static void inbox_received_handler(DictionaryIterator *iter, void *ctx) {
     s_response_buf[RESPONSE_BUF_SIZE - 1] = '\0';
     push_history(s_query_buf, s_response_buf);
     if (s_pending_home) {
-      // タイマー/SW セット時は ANSWER でなくホームに戻り、セクション2で確認できるようにする
+      // タイマー/SW セット時は ANSWER/HOME のステータス行（読みづらい）でなく、
+      // 作成したスロットの SLOT 画面（大きな文字での時間表示）をそのまま開く
       s_pending_home = false;
-      set_home_status("\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88\xe5\xae\x8c\xe4\xba\x86");
-      // UTF-8: "セット完了"
-      show_screen(SCREEN_HOME);
+      if (s_pending_open_slot >= 0) {
+        s_open_slot = s_pending_open_slot;
+        s_pending_open_slot = -1;
+        show_screen(SCREEN_SLOT);
+      } else {
+        set_home_status("\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88\xe5\xae\x8c\xe4\xba\x86");
+        // UTF-8: フォールバック "セット完了"（通常到達しない）
+        show_screen(SCREEN_HOME);
+      }
     } else if (s_pending_weather) {
       s_pending_weather = false;
       show_screen(SCREEN_WEATHER);
